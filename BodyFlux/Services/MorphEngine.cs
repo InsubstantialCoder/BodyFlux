@@ -23,6 +23,7 @@ public sealed class MorphEngine
     private readonly SyncManager                       _sync;
     private readonly IObjectTable                      _objects;
     private readonly IClientState                      _clientState;
+    private readonly GaugeReader                       _gauges;
     private readonly Configuration                     _config;
     private readonly IChatGui                          _chat;
     private readonly IPluginLog                        _log;
@@ -101,13 +102,15 @@ public sealed class MorphEngine
 
     public MorphEngine(
         CustomizePlusIpc ipc, BrioIpc brioIpc, SyncManager sync,
-        IObjectTable objects, IClientState clientState, Configuration config, IChatGui chat, IPluginLog log)
+        IObjectTable objects, IClientState clientState, IJobGauges gauges,
+        Configuration config, IChatGui chat, IPluginLog log)
     {
         _ipc         = ipc;
         _brioIpc     = brioIpc;
         _sync        = sync;
         _objects     = objects;
         _clientState = clientState;
+        _gauges      = new GaugeReader(gauges, objects);
         _config      = config;
         _chat        = chat;
         _log         = log;
@@ -126,9 +129,14 @@ public sealed class MorphEngine
     /// <summary>Progress-per-second of the animated Reset sweep back to the origin (~0.5 s full range).</summary>
     private const float ResetSweepSpeed = 2.0f;
 
+    /// <summary>Smoothing rate for gauge-driven morphs (higher = snappier; ~6 eases nicely).</summary>
+    private const float GaugeSmoothing = 6f;
+
     public void Tick(float seconds)
     {
-        if (_player.Controller.IsMorphing)
+        if (_player.GaugeDriver is { } pres)
+            TickGaugeSession(_player, seconds, pres, broadcast: true);
+        else if (_player.Controller.IsMorphing)
             TickSession(_player, seconds,
                 _player.Resetting ? ResetSweepSpeed : _config.GrowthSpeed, broadcast: true);
 
@@ -143,8 +151,47 @@ public sealed class MorphEngine
 
         if (_brio.Count > 0)
             foreach (var s in _brio.Values)
-                if (s.Controller.IsMorphing)
+                // Brio actors can't be gauge-driven (no gauge memory for other actors), but keep the
+                // shape parallel in case that ever changes.
+                if (s.GaugeDriver is { } bres)
+                    TickGaugeSession(s, seconds, bres, broadcast: false);
+                else if (s.Controller.IsMorphing)
                     TickSession(s, seconds, _config.BrioGrowthSpeed, broadcast: false);
+    }
+
+    /// <summary>
+    /// Drives one gauge-linked session from its live resource: reads the fill, applies invert,
+    /// exponentially smooths it (frame-rate independent), and pushes the resulting profile to C+
+    /// (and to peers when broadcasting). A null reading (wrong job / logged out) holds the body
+    /// steady rather than snapping to 0.
+    /// </summary>
+    private void TickGaugeSession(MorphSession s, float seconds, GaugeResource res, bool broadcast)
+    {
+        var live = _gauges.Read(res);
+        if (live is not { } fill) return;          // wrong job / logged out — hold steady
+
+        if (s.GaugeInvert) fill = 1f - fill;
+
+        // Exponential smoothing toward the live reading (frame-rate independent).
+        float k = 1f - MathF.Exp(-GaugeSmoothing * seconds);
+        s.SmoothedFill += (fill - s.SmoothedFill) * k;
+
+        var json = s.Controller.TickDriven(s.SmoothedFill);
+        if (json == null) return;
+
+        var (errorCode, _) = _ipc.SetTempProfile(s.Controller.TargetIndex, json);
+        if (errorCode == 99)
+        {
+            _log.Error("[BodyFlux] Customize+ IPC lost during gauge morph. Stopping.");
+            StopGaugeMorph();
+            return;
+        }
+
+        if (s.RootExternalised && s.Controller.CurrentRootScale is { } rootScale)
+            ApplyExternalRootScale(s, rootScale);
+
+        if (broadcast && (s.Controller.TargetIndex == 0 || s.NetworkTargetName != null))
+            _sync.TickBroadcast(json, s.NetworkTargetName, s.Controller.Progress, seconds);
     }
 
     private void TickSession(MorphSession s, float seconds, float baseSpeed, bool broadcast)
@@ -197,6 +244,7 @@ public sealed class MorphEngine
     public void StartGrowth(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null)
     {
         if (_player.Controller.IsMorphing) return;
+        if (_player.GaugeDriver != null) return; // a gauge morph owns the session — unbind it first
         _player.SpeedOverride = speedOverride;
 
         var profiles = _ipc.Profiles;
@@ -324,6 +372,14 @@ public sealed class MorphEngine
     /// </summary>
     public void ResetGrowth()
     {
+        // A gauge morph is unbound (not time-reset): hand off to StopGaugeMorph, which clears the
+        // driver and then calls back here to run the normal reverse sweep / restore.
+        if (_player.GaugeDriver != null)
+        {
+            StopGaugeMorph();
+            return;
+        }
+
         if (!_player.RootExternalised
             && !_player.Resetting
             && _player.Controller.BoneCount > 0
@@ -337,6 +393,101 @@ public sealed class MorphEngine
         {
             ResetSession(_player, isPlayer: true);
         }
+    }
+
+    // ── Gauge-linked morph ────────────────────────────────────────────────────
+
+    /// <summary>True while a gauge-linked morph is bound on the local player.</summary>
+    public bool IsGaugeMorphing => _player.GaugeDriver != null;
+
+    /// <summary>Live 0–1 fill of a resource for the local player, or null when unreadable (UI preview).</summary>
+    public float? ReadGaugeFill(GaugeResource resource) => _gauges.Read(resource);
+
+    /// <summary>
+    /// Binds the local player's morph to a live resource (MP or a bar-type job gauge).
+    /// The morph then tracks the resource every frame until <see cref="StopGaugeMorph"/>.
+    /// Self / local-player only. Mutually exclusive with a running/resting time or sequence morph.
+    /// </summary>
+    public void StartGaugeMorph(GaugeResource resource, bool invert)
+    {
+        // One driver per session, and never over a running or resting (un-reset) time morph —
+        // a residual plan means a temp profile is still applied, and binding would snap.
+        if (_player.GaugeDriver != null || _player.Controller.IsMorphing || _player.Controller.BoneCount > 0)
+            return;
+
+        var profiles = _ipc.Profiles;
+        if (SelectedProfileIndex < 0 || SelectedProfileIndex >= profiles.Count)
+        {
+            _log.Warning("[BodyFlux] No destination profile selected.");
+            return;
+        }
+
+        // Gauge morphs are local-player only (gauge memory isn't exposed for other actors).
+        // Resolve origin = active C+ profile on index 0 (same as StartGrowth's self branch).
+        string? originJson = null;
+        var (ec1, activeId) = _ipc.GetActiveProfileId(0);
+        if (ec1 == 0 && activeId.HasValue)
+        {
+            var (ec2, json) = _ipc.GetProfile(activeId.Value);
+            if (ec2 == 0) originJson = json;
+        }
+        if (originJson == null)
+        {
+            var (ecT, tempJson) = _ipc.GetTempProfile(0);
+            if (ecT == 0 && tempJson != null) originJson = tempJson;
+        }
+        if (originJson == null)
+        {
+            _log.Error("[BodyFlux] No active C+ profile on the local player.");
+            return;
+        }
+
+        var (ec3, destJson) = _ipc.GetProfile(profiles[SelectedProfileIndex].Id);
+        if (ec3 != 0 || destJson == null)
+        {
+            _log.Error($"[BodyFlux] GetProfile (destination) failed (ec={ec3}).");
+            return;
+        }
+
+        _player.OriginProfileJson = originJson;
+        _player.NetworkTargetName = null;
+        _player.TargetIndex       = 0;
+        _player.SeqSteps          = null;
+        _player.SeqRunning        = false;
+        _player.SpeedOverride     = null;
+
+        var originJObj  = JObject.Parse(originJson);
+        var destJObj    = JObject.Parse(destJson);
+        var originBones = originJObj["Bones"] as JObject ?? new JObject();
+        var destBones   = destJObj  ["Bones"] as JObject ?? new JObject();
+
+        TrySetupRootExternalisation(_player, 0);
+        // Build the bone plan. Mode/easing: Simple + the configured easing. The time ticker never
+        // runs for a gauge morph, but easing still shapes the gauge→scale curve.
+        _player.Controller.Start(0, originJObj, originBones, destBones,
+                                 MorphMode.Simple, _config.EasingMode, _player.RootExternalised);
+
+        // Switch from time-driven to gauge-driven: clear the controller's morphing flag so the
+        // engine's gauge branch owns it, and seed the smoother at the current reading so it does
+        // not sweep from 0 on bind.
+        _player.Controller.Pause();                 // _isMorphing = false; plan/_progress kept
+        _player.GaugeDriver  = resource;
+        _player.GaugeInvert  = invert;
+        var seed = _gauges.Read(resource) ?? 0f;
+        _player.SmoothedFill = invert ? 1f - seed : seed;
+
+        _sync.ResetSendThrottle();
+        _log.Information($"[BodyFlux] Gauge morph bound: {GaugeReader.Label(resource)} " +
+                        $"(invert={invert}) → '{profiles[SelectedProfileIndex].Name}'.");
+    }
+
+    /// <summary>Unbinds the gauge driver and animates the body back to origin.</summary>
+    public void StopGaugeMorph()
+    {
+        if (_player.GaugeDriver == null) return;
+        _player.GaugeDriver  = null;
+        _player.SmoothedFill = 0f;
+        ResetGrowth();   // GaugeDriver now null → runs the normal reverse sweep / restore path
     }
 
     // ── Brio morph controls ───────────────────────────────────────────────────
@@ -452,6 +603,7 @@ public sealed class MorphEngine
     public bool StartSequence(MorphSequence sequence, float? speedOverride = null)
     {
         if (_player.Controller.IsMorphing) return false;
+        if (_player.GaugeDriver != null) return false; // a gauge morph owns the session — unbind it first
         if (sequence.Steps.Count == 0)
         {
             _log.Warning("[BodyFlux/Seq] Sequence has no steps.");

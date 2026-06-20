@@ -41,6 +41,9 @@ public sealed class PlayerTabView
 
         using (var tab = ImRaii.TabItem("Sequences"))
             if (tab) DrawSequencesSubTab();
+
+        using (var tab = ImRaii.TabItem("Gauge Link"))
+            if (tab) DrawGaugeLinkSubTab();
     }
 
     private void DrawMorphSubTab()
@@ -366,7 +369,8 @@ public sealed class PlayerTabView
         {
             bool canStart = plugin.SelectedProfileIndex >= 0
                          && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count
-                         && plugin.Progress < 1f;
+                         && plugin.Progress < 1f
+                         && !plugin.IsGaugeMorphing;
 
             using (ImRaii.Disabled(!canStart))
             {
@@ -382,7 +386,7 @@ public sealed class PlayerTabView
             onResetProfileCache();
         }
 
-        bool done = !busy && !plugin.IsPaused && plugin.BoneAnimCount > 0;
+        bool done = !busy && !plugin.IsPaused && plugin.BoneAnimCount > 0 && !plugin.IsGaugeMorphing;
 
         ImGui.SameLine();
         if ((busy || plugin.IsPaused || done) && ImGui.Button("Reverse", new Vector2(bw, 0)))
@@ -538,6 +542,192 @@ public sealed class PlayerTabView
 
         if (!seqActive) return;
         DrawSequenceFooter(bw, scale, "Sequence complete — press Stop to restore your original profile.");
+    }
+
+    private void DrawGaugeLinkSubTab()
+    {
+        var   config = plugin.Configuration;
+        float scale  = ImGuiHelpers.GlobalScale;
+        float bw     = 90 * scale;
+        bool  cpOk   = plugin.IsCustomizePlusAvailable;
+        bool  bound  = plugin.IsGaugeMorphing;
+
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(
+            "Bind your morph to a live resource (MP or a bar-type job gauge). Your body tracks the " +
+            "gauge in real time — 50% gauge = halfway to the destination profile, 100% = full morph.");
+        ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // ── Requirement / availability ────────────────────────────────────────
+        if (!cpOk)
+        {
+            ImGui.TextColored(new Vector4(0.9f, 0.3f, 0.3f, 1f),
+                "Customize+ not detected — please install and enable it.");
+            return;
+        }
+
+        // ── Destination profile ───────────────────────────────────────────────
+        ImGui.TextUnformatted("Destination Profile:");
+        ImGui.SetNextItemWidth(-1);
+
+        string preview = plugin.SelectedProfileIndex >= 0 && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count
+            ? plugin.SavedProfiles[plugin.SelectedProfileIndex].Name
+            : "— select a profile —";
+
+        using (ImRaii.Disabled(bound))
+        {
+            if (ImGui.BeginCombo("##GaugeDestProfile", preview))
+            {
+                if (ImGui.IsWindowAppearing())
+                {
+                    _profileFilter = "";
+                    ImGui.SetKeyboardFocusHere();
+                }
+
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("##GaugeProfileFilter", ref _profileFilter, 128);
+                ImGui.Separator();
+
+                bool anyVisible = false;
+                for (int i = 0; i < plugin.SavedProfiles.Count; i++)
+                {
+                    if (!string.IsNullOrEmpty(_profileFilter) &&
+                        !plugin.SavedProfiles[i].Name.Contains(_profileFilter, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    anyVisible = true;
+                    bool selected = plugin.SelectedProfileIndex == i;
+                    if (ImGui.Selectable(plugin.SavedProfiles[i].Name, selected))
+                    {
+                        plugin.SelectedProfileIndex = i;
+                        _profileFilter = "";
+                    }
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+
+                if (!anyVisible)
+                    ImGui.TextDisabled("No matches.");
+
+                ImGui.EndCombo();
+            }
+        }
+
+        ImGui.Spacing();
+
+        // ── Resource selector ─────────────────────────────────────────────────
+        ImGui.TextUnformatted("Resource:");
+        ImGui.SetNextItemWidth(-1);
+
+        var resource = config.LastGaugeResource;
+        using (ImRaii.Disabled(bound))
+        {
+            if (ImGui.BeginCombo("##GaugeResource", GaugeReader.Label(resource)))
+            {
+                foreach (var r in Enum.GetValues<GaugeResource>())
+                {
+                    bool selected = r == resource;
+                    if (ImGui.Selectable(GaugeReader.Label(r), selected))
+                    {
+                        config.LastGaugeResource = r;
+                        config.Save();
+                    }
+                    if (selected) ImGui.SetItemDefaultFocus();
+                }
+                ImGui.EndCombo();
+            }
+        }
+
+        ImGui.Spacing();
+
+        // ── Invert ────────────────────────────────────────────────────────────
+        using (ImRaii.Disabled(bound))
+        {
+            bool invert = config.LastGaugeInvert;
+            if (ImGui.Checkbox("Invert (shrink as the gauge fills)", ref invert))
+            {
+                config.LastGaugeInvert = invert;
+                config.Save();
+            }
+        }
+
+        // ── Live fill preview ─────────────────────────────────────────────────
+        ImGui.Spacing();
+        var fill = plugin.ReadGaugeFill(config.LastGaugeResource);
+        if (fill is { } f)
+        {
+            ImGui.TextDisabled("Current fill:");
+            ImGui.SameLine();
+            ImGui.ProgressBar(f, new Vector2(-1, 16 * scale), $"{f * 100f:F0}%%");
+        }
+        else
+        {
+            ImGui.TextDisabled("Current fill: — (not on the matching job / logged out)");
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // ── Bind / Unbind ─────────────────────────────────────────────────────
+        if (bound)
+        {
+            if (ImGui.Button("Unbind", new Vector2(bw, 0)))
+            {
+                plugin.StopGaugeMorph();
+                onResetProfileCache();
+            }
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(0.3f, 0.9f, 0.4f, 1f),
+                $"Bound to {GaugeReader.Label(config.LastGaugeResource)} — tracking live.");
+        }
+        else
+        {
+            // Gauge morphs need a clean, idle self-session and can't run in GPose.
+            bool profileSel = plugin.SelectedProfileIndex >= 0
+                           && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count;
+            bool idle       = !plugin.IsMorphing && !plugin.IsPaused && plugin.BoneAnimCount == 0;
+            bool canBind    = profileSel && idle && !plugin.IsInGPose;
+
+            using (ImRaii.Disabled(!canBind))
+            {
+                if (ImGui.Button("Bind", new Vector2(bw, 0)))
+                    plugin.StartGaugeMorph(config.LastGaugeResource, config.LastGaugeInvert);
+            }
+
+            if (!profileSel)
+            {
+                ImGui.SameLine();
+                ImGui.TextDisabled("Select a destination profile first.");
+            }
+            else if (plugin.IsInGPose)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(new Vector4(0.9f, 0.5f, 0.2f, 1f), "Unavailable in GPose.");
+            }
+            else if (!idle)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(new Vector4(0.9f, 0.5f, 0.2f, 1f),
+                    "Reset the active time morph first.");
+            }
+        }
+
+        // ── Constraints / caveats ─────────────────────────────────────────────
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(
+            "• Local player only — gauge data isn't available for other actors or GPose clones.\n" +
+            "• In a Sync group, peers see your body track the gauge live.\n" +
+            "• MP is full out of combat, so an MP-linked morph sits at 100% (or 0% inverted) until you cast.");
+        ImGui.PopTextWrapPos();
     }
 
     /// <summary>Playback footer for the player sequence: status line, progress bar, and Pause/Resume/Stop.</summary>

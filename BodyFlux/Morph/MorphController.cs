@@ -254,7 +254,19 @@ public sealed class MorphController
         }
 
         // ── Bone interpolation ────────────────────────────────────────────────
-        var workBones = _workingProfile["Bones"] as JObject;
+        return ApplyProgress();
+    }
+
+    /// <summary>
+    /// Interpolates every bone to the current <see cref="_progress"/> (after easing), writes the
+    /// result into the working profile, and returns the serialised C+ JSON. Shared by the
+    /// time-based <see cref="Tick"/> and the gauge-driven <see cref="TickDriven"/> so both paths
+    /// use the exact same bone-lerp + root-externalisation logic. Returns null if there is no
+    /// working profile / Bones node.
+    /// </summary>
+    private string? ApplyProgress()
+    {
+        var workBones = _workingProfile?["Bones"] as JObject;
         if (workBones == null) return null;
 
         var t = EasingHelper.Apply(_progress, _easing);
@@ -274,6 +286,20 @@ public sealed class MorphController
                 scale:       Vector3.Lerp(anim.StartScale,       anim.EndScale,       t));
         }
 
-        return _workingProfile.ToString(Formatting.None);
+        return _workingProfile!.ToString(Formatting.None);
+    }
+
+    /// <summary>
+    /// Drives the morph to an absolute progress (0–1), bypassing time integration, mode, and
+    /// boundary handling. Used by gauge-linked morphs, which set progress from a live resource each
+    /// frame and never "finish". Callable while <see cref="IsMorphing"/> is false (the plan still
+    /// exists because <see cref="Start"/> built it). Returns the serialised C+ JSON, or null if not
+    /// started / no working profile.
+    /// </summary>
+    public string? TickDriven(float targetProgress)
+    {
+        if (_workingProfile == null || _boneAnims.Count == 0) return null;
+        _progress = Math.Clamp(targetProgress, 0f, 1f);
+        return ApplyProgress();
     }
 }

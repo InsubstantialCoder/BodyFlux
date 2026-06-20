@@ -43,6 +43,11 @@ public class Configuration : IPluginConfiguration
     // When true, connected peers are allowed to apply morph profiles to this character.
     public bool AllowRemoteMorph { get; set; } = false;
 
+    // ── Gauge Link ───────────────────────────────────────────────────────────
+    // Last-used gauge-link selection, restored into the Gauge Link tab on next open.
+    public GaugeResource LastGaugeResource { get; set; } = GaugeResource.Mp;
+    public bool          LastGaugeInvert   { get; set; } = false;
+
     // ── Keybinds ─────────────────────────────────────────────────────────────
     // Master switch: when false, no keybind fires regardless of its binding.
     public bool KeybindsEnabled { get; set; } = true;

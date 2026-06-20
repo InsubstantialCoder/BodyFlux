@@ -29,6 +29,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IChatGui               ChatGui         { get; private set; } = null!;
     [PluginService] internal static IClientState           ClientState     { get; private set; } = null!;
     [PluginService] internal static IKeyState              KeyState        { get; private set; } = null!;
+    [PluginService] internal static IJobGauges             JobGauges       { get; private set; } = null!;
 
     // ── Core services ─────────────────────────────────────────────────────────
     internal CustomizePlusIpc Ipc   { get; private init; }
@@ -128,7 +129,7 @@ public sealed class Plugin : IDalamudPlugin
         Ipc   = new CustomizePlusIpc(PluginInterface, Log);
         Brio  = new BrioIpc(PluginInterface, Log);
         Sync  = new SyncManager(Ipc, ObjectTable, Log, Configuration);
-        Morph = new MorphEngine(Ipc, Brio, Sync, ObjectTable, ClientState, Configuration, ChatGui, Log);
+        Morph = new MorphEngine(Ipc, Brio, Sync, ObjectTable, ClientState, JobGauges, Configuration, ChatGui, Log);
         Keybinds = new KeybindHandler(this, KeyState);
 
         Ipc.ProfileUpdated += OnLocalProfileUpdated;
@@ -238,6 +239,12 @@ public sealed class Plugin : IDalamudPlugin
     public void ReverseGrowth() => Morph.ReverseGrowth();
     public void ResetGrowth()   => Morph.ResetGrowth();
 
+    // ── Gauge-linked morph ────────────────────────────────────────────────────
+    public bool   IsGaugeMorphing => Morph.IsGaugeMorphing;
+    public float? ReadGaugeFill(GaugeResource resource) => Morph.ReadGaugeFill(resource);
+    public void   StartGaugeMorph(GaugeResource resource, bool invert) => Morph.StartGaugeMorph(resource, invert);
+    public void   StopGaugeMorph() => Morph.StopGaugeMorph();
+
     public void StartBrioMorph(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null)
         => Morph.StartBrioMorph(speedOverride, modeOverride, easingOverride);
 
@@ -285,6 +292,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (gameObjectIndex != 0) return;
         Sync.RefreshLocalBaseProfile(
-            selfMorphing: Morph.IsMorphing && Morph.MorphTargetIndex == 0);
+            selfMorphing: (Morph.IsMorphing || Morph.IsGaugeMorphing) && Morph.MorphTargetIndex == 0);
     }
 }

@@ -41,6 +41,14 @@ public sealed class MorphSession
     /// </summary>
     public bool Resetting;
 
+    // ── Gauge-linked driver (null GaugeDriver = not a gauge morph) ─────────────
+    /// <summary>Non-null ⇒ this session is gauge-driven (bound to a live resource each frame).</summary>
+    public GaugeResource? GaugeDriver;
+    /// <summary>True ⇒ shrink as the resource fills, grow as it drains.</summary>
+    public bool           GaugeInvert;
+    /// <summary>Exponentially eased toward the live gauge reading each frame (avoids stepping).</summary>
+    public float          SmoothedFill;
+
     // ── GPose root externalisation ────────────────────────────────────────────
     /// <summary>
     /// True when the root bone is being driven through Brio's model transform instead of the
