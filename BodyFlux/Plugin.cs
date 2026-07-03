@@ -267,7 +267,7 @@ public sealed class Plugin : IDalamudPlugin
     public void PauseGrowth()   => Morph.PauseGrowth();
     public void ResumeGrowth()  => Morph.ResumeGrowth();
     public void ReverseGrowth() => Morph.ReverseGrowth();
-    public void ResetGrowth()   => Morph.ResetGrowth();
+    public void ResetGrowth(bool toActiveProfile = false) => Morph.ResetGrowth(toActiveProfile);
 
     public void StartBrioMorph(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
                                MorphTargetMode? targetModeOverride = null)

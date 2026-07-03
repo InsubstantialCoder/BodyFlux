@@ -468,7 +468,7 @@ public sealed class BrioTabView
             config.BrioSequences, ref dummyPlaying, ref _seqAddFilter, ref _seqAddMode,
             config.BrioGrowthSpeed, busy: false, seqActive: false,
             playAllowed: actorSelected, "Select an actor in the Single tab first.",
-            onReset: ResetSequenceTarget, bw, scale);
+            onReset: ResetSequenceTarget, onResetActive: null, bw, scale);
 
         if (playRequest >= 0)
             plugin.StartBrioSequence(config.BrioSequences[playRequest]);

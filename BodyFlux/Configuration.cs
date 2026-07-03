@@ -35,6 +35,12 @@ public class Configuration : IPluginConfiguration
     // Whether a morph replaces the whole profile or only overlays the destination's bones.
     public MorphTargetMode MorphTargetMode { get; set; } = MorphTargetMode.FullProfile;
 
+    // When set, this saved Customize+ profile is always used as the morph origin for the local
+    // player's Single and Sequence morphs, instead of whatever profile is live-active on the
+    // character. "Reset Origin" restores to this profile; "Reset Active" restores to whatever's
+    // really active on the character regardless of this setting.
+    public Guid? OriginProfileId { get; set; } = null;
+
     // Easing curve applied to the interpolation progress each frame.
     public EasingMode EasingMode     { get; set; } = EasingMode.Linear;
     public EasingMode BrioEasingMode { get; set; } = EasingMode.Linear;

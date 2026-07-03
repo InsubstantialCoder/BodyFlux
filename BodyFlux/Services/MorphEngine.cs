@@ -273,20 +273,7 @@ public sealed class MorphEngine
         }
         else
         {
-            var (ec1, activeId) = _ipc.GetActiveProfileId(0);
-            if (ec1 == 0 && activeId.HasValue)
-            {
-                var (ec2, json) = _ipc.GetProfile(activeId.Value);
-                if (ec2 == 0) originJson = json;
-            }
-
-            // Fallback: a temp profile already applied (e.g. another plugin).
-            if (originJson == null)
-            {
-                var (ecT, tempJson) = _ipc.GetTempProfile(0);
-                if (ecT == 0 && tempJson != null) originJson = tempJson;
-            }
-
+            originJson = ResolvePlayerOriginJson();
             if (originJson == null)
             {
                 _log.Error("[BodyFlux] No active C+ profile on the local player. " +
@@ -370,27 +357,50 @@ public sealed class MorphEngine
     public void ResumeGrowth()  => _player.Controller.Resume();
     public void ReverseGrowth() => _player.Controller.Reverse();
     /// <summary>
-    /// Resets the local player's morph. Outside GPose the root bone runs through Customize+, and a
-    /// one-shot reset to identity is skipped by C+ (it ignores identity transforms), leaving n_root
-    /// stuck. So we animate a quick reverse back to the origin — the path Reverse uses, which C+
-    /// applies frame by frame — and finalise once it arrives. In GPose the root is handled by Brio's
-    /// model transform, so the instant teardown already restores correctly.
+    /// Resets the local player's morph — or, with nothing in flight, just applies the requested
+    /// state directly. <paramref name="toActiveProfile"/> selects the landing state: <c>false</c>
+    /// ("Reset to Origin", default) lands on the morph's starting point (pinned Origin Profile if
+    /// set, else whatever was live-active when the morph began). <c>true</c> ("Reset to Active")
+    /// instead lands on whatever's really active on the character right now, ignoring the origin.
+    /// Both work at any time, mid-morph or fully idle, and either can be pressed after the other.
+    /// Outside GPose the root bone runs through Customize+, and a one-shot reset to identity is
+    /// skipped by C+ (it ignores identity transforms), leaving n_root stuck. So a mid-morph reset
+    /// still animates a quick reverse back to the origin — the path Reverse uses, which C+ applies
+    /// frame by frame — and finalises once it arrives. In GPose the root is handled by Brio's model
+    /// transform, so the instant teardown already restores correctly.
     /// </summary>
-    public void ResetGrowth()
+    public void ResetGrowth(bool toActiveProfile = false)
     {
-        // Already fully reset — there is nothing to undo. Bail out so a redundant Reset (or a Reset
-        // after switching the target back to Self) never reaches ResetSession, where the controller's
-        // stale TargetIndex (Stop() does not clear it) would drive a DeleteTempProfile on the last
-        // peer we morphed — stripping the base profile we just restored and snapping them to
-        // unscaled ("skinny"). A live morph always has BoneCount > 0 or a pending origin.
-        if (!_player.Resetting
-            && _player.Controller.BoneCount == 0
-            && _player.OriginProfileJson == null)
+        bool morphInFlight = _player.Resetting || _player.Controller.BoneCount > 0;
+
+        if (!morphInFlight)
+        {
+            // No session to animate through — resolve and apply the requested state directly.
+            // Only ever touches the local player (index 0): with nothing in flight there is no
+            // peer/Brio target of ours to touch, so this can never clobber someone else's overlay.
+            if (toActiveProfile)
+            {
+                _ipc.DeleteTempProfile(0);
+                _sync.SendStop(null);
+            }
+            else
+            {
+                var originJson = ResolvePlayerOriginJson();
+                if (originJson == null)
+                {
+                    _log.Warning("[BodyFlux] Reset to Origin: no active C+ profile on the local player.");
+                    return;
+                }
+                _ipc.SetTempProfile(0, originJson);
+                _sync.SendFrame(originJson, null);
+            }
             return;
+        }
+
+        _player.ResetToLiveActive = toActiveProfile;
 
         if (!_player.RootExternalised
             && !_player.Resetting
-            && _player.Controller.BoneCount > 0
             && _player.Controller.Progress > 0.001f)
         {
             _player.SpeedOverride = null; // sweep uses ResetSweepSpeed, not any per-morph override
@@ -549,18 +559,34 @@ public sealed class MorphEngine
             return false;
         }
 
-        var (ec1, activeId) = _ipc.GetActiveProfileId(0);
-        if (ec1 != 0 || !activeId.HasValue)
+        // A pinned Origin Profile always wins over the live-active-profile read.
+        string? originJson = null;
+        if (_config.OriginProfileId is { } pinnedOriginId)
         {
-            _log.Error($"[BodyFlux/Seq] GetActiveProfileId failed (ec={ec1}). " +
-                       "Make sure a Customize+ profile is active.");
-            return false;
+            var (ecPin, pinnedJson) = _ipc.GetProfile(pinnedOriginId);
+            if (ecPin == 0 && pinnedJson != null)
+                originJson = pinnedJson;
+            else
+                _log.Warning($"[BodyFlux/Seq] Origin Profile could not be loaded (ec={ecPin}); " +
+                             "falling back to the live active profile.");
         }
-        var (ec2, originJson) = _ipc.GetProfile(activeId.Value);
-        if (ec2 != 0 || originJson == null)
+
+        if (originJson == null)
         {
-            _log.Error($"[BodyFlux/Seq] GetProfile (origin) failed (ec={ec2}).");
-            return false;
+            var (ec1, activeId) = _ipc.GetActiveProfileId(0);
+            if (ec1 != 0 || !activeId.HasValue)
+            {
+                _log.Error($"[BodyFlux/Seq] GetActiveProfileId failed (ec={ec1}). " +
+                           "Make sure a Customize+ profile is active.");
+                return false;
+            }
+            var (ec2, json) = _ipc.GetProfile(activeId.Value);
+            if (ec2 != 0 || json == null)
+            {
+                _log.Error($"[BodyFlux/Seq] GetProfile (origin) failed (ec={ec2}).");
+                return false;
+            }
+            originJson = json;
         }
 
         var steps = new List<SeqStep>(sequence.Steps.Count);
@@ -1009,6 +1035,35 @@ public sealed class MorphEngine
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Resolves the local player's morph origin: a pinned Origin Profile always wins, then the
+    /// live-active C+ profile, then a temp profile already applied by another plugin. Shared by
+    /// <see cref="StartGrowth"/> and the instant-apply path in <see cref="ResetGrowth"/> so both
+    /// agree on what "Origin" currently means.
+    /// </summary>
+    private string? ResolvePlayerOriginJson()
+    {
+        if (_config.OriginProfileId is { } pinnedOriginId)
+        {
+            var (ecPin, pinnedJson) = _ipc.GetProfile(pinnedOriginId);
+            if (ecPin == 0 && pinnedJson != null)
+                return pinnedJson;
+            _log.Warning($"[BodyFlux] Origin Profile could not be loaded (ec={ecPin}); " +
+                         "falling back to the live active profile.");
+        }
+
+        var (ec1, activeId) = _ipc.GetActiveProfileId(0);
+        if (ec1 == 0 && activeId.HasValue)
+        {
+            var (ec2, json) = _ipc.GetProfile(activeId.Value);
+            if (ec2 == 0 && json != null) return json;
+        }
+
+        // Fallback: a temp profile already applied (e.g. another plugin).
+        var (ecT, tempJson) = _ipc.GetTempProfile(0);
+        return ecT == 0 && tempJson != null ? tempJson : null;
+    }
+
     private string ResolveBrioOrigin(ushort actorIndex, string? mcdfJson, out string source)
     {
         if (mcdfJson != null)
@@ -1034,11 +1089,17 @@ public sealed class MorphEngine
     {
         var targetIndex = s.Controller.TargetIndex;
 
+        // Reset Active only ever applies to the local player (targetIndex 0) — for a Brio actor or
+        // a remote peer, OriginProfileJson is the only known-good state to hand back (deleting the
+        // temp profile there would strip any other plugin's overlay, e.g. Mare/Lightless, on a
+        // target we don't own outside our own morph).
+        bool restoreOrigin = targetIndex != 0 || !s.ResetToLiveActive;
+
         if (isPlayer)
         {
             if (s.NetworkTargetName != null)
                 _sync.SendStop(s.NetworkTargetName);
-            else if (s.OriginProfileJson != null)
+            else if (restoreOrigin && s.OriginProfileJson != null)
                 _sync.SendFrame(s.OriginProfileJson, null);
             else
                 _sync.SendStop(null);
@@ -1058,7 +1119,7 @@ public sealed class MorphEngine
         s.ModelTransformIndex = null;
         s.OriginalModelScale  = null;
 
-        if (targetIndex != 0 && s.OriginProfileJson != null)
+        if (restoreOrigin && s.OriginProfileJson != null)
             _ipc.SetTempProfile(targetIndex, s.OriginProfileJson);
         else
             _ipc.DeleteTempProfile(targetIndex);
@@ -1066,6 +1127,7 @@ public sealed class MorphEngine
         s.OriginProfileJson    = null;
         s.NetworkTargetName    = null;
         s.CompletedRemoteJson  = null;
+        s.ResetToLiveActive    = false;
     }
 
     private ushort? FindCharacterIndex(string characterName)

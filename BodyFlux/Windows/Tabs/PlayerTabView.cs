@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -20,6 +21,7 @@ public sealed class PlayerTabView
     private readonly Action            onResetProfileCache; // ask MainWindow to refresh profiles next OnOpen
 
     private string          _profileFilter   = "";
+    private string          _originProfileFilter = ""; // filter for the Default Origin Profile picker
     private int             _seqPlayingIndex = -1; // sequence active/resting (-1 = none)
     private string          _seqAddFilter    = ""; // filter for the "Add step" picker
     private MorphTargetMode _seqAddMode      = MorphTargetMode.FullProfile; // "Add step" target mode
@@ -74,12 +76,18 @@ public sealed class PlayerTabView
         ImGui.SameLine();
         ImGui.TextColored(new Vector4(0.4f, 0.9f, 0.6f, 1f), plugin.ActiveProfileName);
 
+        var originConfig = plugin.Configuration;
         ImGui.Spacing();
         ImGui.PushTextWrapPos(0f);
-        ImGui.TextDisabled(
-            "This is the Customize+ Profile currently applied to your character. " +
-            "It will be used as the starting point for the morph.");
+        ImGui.TextDisabled(originConfig.OriginProfileId == null
+            ? "This is the Customize+ Profile currently applied to your character. " +
+              "It will be used as the starting point for the morph."
+            : "This is the Customize+ Profile currently applied to your character. " +
+              "It is overridden below as the morph's starting point.");
         ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        DrawOriginProfilePicker(originConfig);
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -100,6 +108,51 @@ public sealed class PlayerTabView
         DrawControls();
 
         DrawHistory();
+    }
+
+    /// <summary>
+    /// Picker for pinning a saved Customize+ profile as the always-used origin for the local
+    /// player's Single and Sequence morphs, overriding the live-active-profile read. Reverse and
+    /// "Reset to Origin" both land on this pinned profile; "Reset to Active" ignores it and
+    /// restores whatever's really active on the character.
+    /// </summary>
+    private void DrawOriginProfilePicker(Configuration config)
+    {
+        ImGui.TextUnformatted("Origin Profile:");
+        ImGui.Spacing();
+
+        var names = new List<string> { "— use live active profile (default) —" };
+        names.AddRange(plugin.SavedProfiles.Select(p => p.Name));
+
+        int idx = 0;
+        if (config.OriginProfileId is { } pinnedId)
+        {
+            for (int i = 0; i < plugin.SavedProfiles.Count; i++)
+                if (plugin.SavedProfiles[i].Id == pinnedId) { idx = i + 1; break; }
+        }
+        int prevIdx = idx;
+
+        using (ImRaii.Disabled(plugin.IsMorphing))
+        {
+            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+            UiHelpers.DrawFilterableCombo("##OriginProfile", "##OriginProfileFilter", names,
+                ref idx, ref _originProfileFilter, names[0]);
+        }
+
+        if (idx != prevIdx)
+        {
+            config.OriginProfileId = idx == 0 ? null : plugin.SavedProfiles[idx - 1].Id;
+            config.Save();
+        }
+
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(
+            "When set, every morph on yourself (Single and Sequences) always starts from this saved " +
+            "profile instead of whatever's currently active on your character. Reverse and Reset to " +
+            "Origin both play back toward it; Reset to Active ignores it and restores your character's " +
+            "real active profile instead.");
+        ImGui.PopTextWrapPos();
     }
 
     private void DrawOptionsSimple()
@@ -425,26 +478,41 @@ public sealed class PlayerTabView
             }
         }
 
-        ImGui.SameLine();
-        if (ImGui.Button("Reset", new Vector2(bw, 0)))
-        {
-            plugin.ResetGrowth();
-            onResetProfileCache();
-        }
 
         bool done = !busy && !plugin.IsPaused && plugin.BoneAnimCount > 0;
 
+        if (busy || plugin.IsPaused || done)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Reverse", new Vector2(bw, 0)))
+                plugin.ReverseGrowth();
+        }
+
+        // ── Reset row: always on its own line below Play/Pause/Apply + Reverse ─
+        if (ImGui.Button("Reset to Origin", new Vector2(bw * 1.4f, 0)))
+        {
+            plugin.ResetGrowth(toActiveProfile: false);
+            onResetProfileCache();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores the Origin Profile (pinned, or whatever was active when the last morph began). Works at any time.");
+
         ImGui.SameLine();
-        if ((busy || plugin.IsPaused || done) && ImGui.Button("Reverse", new Vector2(bw, 0)))
-            plugin.ReverseGrowth();
+        if (ImGui.Button("Reset to Active", new Vector2(bw * 1.4f, 0)))
+        {
+            plugin.ResetGrowth(toActiveProfile: true);
+            onResetProfileCache();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores whatever Customize+ profile is really active on your character right now. Works at any time.");
 
         // ── Completion banner ─────────────────────────────────────────────────
         if (done)
         {
             string? banner = plugin.CurrentMorphMode switch
             {
-                MorphMode.Simple     when plugin.Progress >= 1f => "Morph complete! Press Reset to restore the original Profile.",
-                MorphMode.LoopSingle when plugin.Progress <= 0f => "Loop complete! You are back at the starting Profile. Press Reset to clean up.",
+                MorphMode.Simple     when plugin.Progress >= 1f => "Morph complete! Press Reset to Origin or Reset to Active to restore your profile.",
+                MorphMode.LoopSingle when plugin.Progress <= 0f => "Loop complete! You are back at the starting Profile. Press Reset to Origin or Reset to Active to clean up.",
                 _                                               => null
             };
 
@@ -588,16 +656,21 @@ public sealed class PlayerTabView
         int playRequest = seqList.Draw(
             config.Sequences, ref _seqPlayingIndex, ref _seqAddFilter, ref _seqAddMode,
             config.GrowthSpeed, busy, seqActive, playAllowed: true, null,
-            onReset: plugin.ResetGrowth, bw, scale);
+            onReset: () => plugin.ResetGrowth(toActiveProfile: false),
+            onResetActive: () => plugin.ResetGrowth(toActiveProfile: true),
+            bw, scale);
 
         if (playRequest >= 0 && plugin.StartSequence(config.Sequences[playRequest]))
             _seqPlayingIndex = playRequest;
 
         if (!seqActive) return;
-        DrawSequenceFooter(bw, scale, "Sequence complete — press Stop to restore your original profile.");
+        DrawSequenceFooter(bw, scale, "Sequence complete — press Reset to Origin or Reset to Active to restore your profile.");
     }
 
-    /// <summary>Playback footer for the player sequence: status line, progress bar, and Pause/Resume/Stop.</summary>
+    /// <summary>
+    /// Playback footer for the player sequence: status line, progress bar, Pause/Resume, and the
+    /// Reset row (always on its own line below, same layout as the Single tab's controls).
+    /// </summary>
     private void DrawSequenceFooter(float bw, float scale, string completeText)
     {
         ImGui.Spacing();
@@ -628,8 +701,16 @@ public sealed class PlayerTabView
                 plugin.ResumeGrowth();
         }
 
-        if (running || paused) ImGui.SameLine();
-        if (ImGui.Button("Stop##Seq", new Vector2(bw, 0)))
-            plugin.ResetGrowth();
+        // ── Reset row: always on its own line below Pause/Resume ───────────────
+        if (ImGui.Button("Reset to Origin##Seq", new Vector2(bw * 1.4f, 0)))
+            plugin.ResetGrowth(toActiveProfile: false);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores the Origin Profile (pinned, or whatever was active when the sequence began). Also stops the sequence.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Reset to Active##Seq", new Vector2(bw * 1.4f, 0)))
+            plugin.ResetGrowth(toActiveProfile: true);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores whatever Customize+ profile is really active on your character right now. Also stops the sequence.");
     }
 }
