@@ -50,6 +50,13 @@ public sealed class MorphSession
     /// </summary>
     public bool Resetting;
 
+    /// <summary>
+    /// True when the in-progress Reset should land on the character's real live-active profile
+    /// ("Reset Active") instead of <see cref="OriginProfileJson"/> ("Reset Origin", the default).
+    /// Set by <see cref="MorphEngine.ResetGrowth"/>, consumed and cleared in ResetSession.
+    /// </summary>
+    public bool ResetToLiveActive;
+
     // ── GPose root externalisation ────────────────────────────────────────────
     /// <summary>
     /// True when the root bone is being driven through Brio's model transform instead of the
