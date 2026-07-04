@@ -666,7 +666,13 @@ public sealed class MorphEngine
         var steps = new List<SeqStep>(sequence.Steps.Count);
         foreach (var step in sequence.Steps)
         {
-            var (ec, destJson) = _ipc.GetProfile(step.ProfileId);
+            // Overlay steps carry a Template id in ProfileId (not a profile id), so they must be
+            // fetched via GetTemplate — same as the player sequence path in StartSequence. Calling
+            // GetProfile on a template id fails and aborts the whole sequence, which is why overlay
+            // sequences never played on Brio actors while full-profile ones did.
+            var (ec, destJson) = step.TargetMode == MorphTargetMode.TemplateOverlay
+                ? _ipc.GetTemplate(step.TemplateOwnerProfileId ?? Guid.Empty, step.ProfileId)
+                : _ipc.GetProfile(step.ProfileId);
             if (ec != 0 || destJson == null)
             {
                 _log.Error($"[BodyFlux/Seq] Profile '{step.ProfileName}' not found (ec={ec}); aborting sequence.");
@@ -705,6 +711,16 @@ public sealed class MorphEngine
             ? BoneJsonHelper.BuildOverlayDestination(originBones, destBones)
             : destBones;
 
+        // Remember the full-body profile this step actually lands on, so the next step chains its
+        // origin from the real post-step appearance rather than the raw DestJson. For a Full Profile
+        // step that is just the destination profile; for an overlay step it is origin ⊕ overlay (a
+        // complete body), NOT the bare template — chaining from the template would blank every
+        // non-overlaid bone to identity after the first step.
+        var effectiveProfile = step.TargetMode == MorphTargetMode.TemplateOverlay
+            ? new JObject(originJObj) { ["Bones"] = effectiveDestBones }
+            : destJObj;
+        s.SeqLastEffectiveJson = effectiveProfile.ToString(Newtonsoft.Json.Formatting.None);
+
         s.SpeedOverride = step.Speed;
         s.Controller.Start(s.TargetIndex, originJObj, originBones, effectiveDestBones,
                            MorphMode.Simple, step.Easing, s.RootExternalised);
@@ -727,7 +743,10 @@ public sealed class MorphEngine
             return;
         }
 
-        StartSequenceStep(s, s.SeqSteps[prev].DestJson, s.SeqSteps[s.SeqIndex]);
+        // Chain from the previous step's realized full-body result (origin ⊕ overlay for an overlay
+        // step), not its raw DestJson — see MorphSession.SeqLastEffectiveJson.
+        var nextOrigin = s.SeqLastEffectiveJson ?? s.SeqSteps[prev].DestJson;
+        StartSequenceStep(s, nextOrigin, s.SeqSteps[s.SeqIndex]);
     }
 
     // ── Preset controls ───────────────────────────────────────────────────────
