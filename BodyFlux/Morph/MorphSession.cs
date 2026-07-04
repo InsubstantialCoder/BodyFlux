@@ -44,6 +44,15 @@ public sealed class MorphSession
     public bool           SeqRunning;
 
     /// <summary>
+    /// The full-body profile JSON that the current sequence step actually resolves to — origin ⊕
+    /// overlay for a Template Overlay step, or the plain destination profile for a Full Profile step.
+    /// The next step chains its origin from THIS, not from the step's raw DestJson: an overlay step's
+    /// DestJson is only the template's handful of bones, so chaining from it would drop every other
+    /// bone to identity and blank the C+ scaling after the first step. Set by StartSequenceStep.
+    /// </summary>
+    public string? SeqLastEffectiveJson;
+
+    /// <summary>
     /// True while a Reset is animating this session back to the origin (see
     /// <see cref="MorphController.BeginReset"/>). The engine finalises the reset once the sweep
     /// reaches the origin and the controller stops ticking.

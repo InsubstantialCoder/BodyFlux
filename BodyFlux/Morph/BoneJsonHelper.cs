@@ -54,16 +54,14 @@ internal static class BoneJsonHelper
     }
 
     /// <summary>
-    /// True when the bone's source entry is a Customize+ "linked" scale parent (PropagateScale set),
-    /// i.e. its scale is meant to propagate to child bones. Destination takes precedence over origin,
-    /// matching <see cref="CloneBoneTemplate"/> so the link state follows the morph target.
+    /// True when the bone's entry in <paramref name="bones"/> is a Customize+ "linked" scale parent
+    /// (PropagateScale set), i.e. its scale is meant to propagate to child bones. Evaluated per
+    /// endpoint (no origin/destination precedence): a morph must know the link state of BOTH ends
+    /// independently so it can ramp the child magnitude from the origin's propagated scale to the
+    /// destination's — see <see cref="SetLinkedChildScaling"/> and MorphController's BoneAnim.
     /// </summary>
-    public static bool IsLinkedScale(JObject originBones, JObject destBones, string boneName)
-    {
-        if (destBones[boneName]   is JObject d) return d["PropagateScale"]?.Value<bool>() == true;
-        if (originBones[boneName] is JObject o) return o["PropagateScale"]?.Value<bool>() == true;
-        return false;
-    }
+    public static bool IsBoneLinked(JObject bones, string boneName) =>
+        bones[boneName] is JObject b && b["PropagateScale"]?.Value<bool>() == true;
 
     /// <summary>
     /// Builds a virtual destination "Bones" node for <see cref="MorphTargetMode.TemplateOverlay"/>: a
@@ -128,9 +126,13 @@ internal static class BoneJsonHelper
     /// C+'s propagation gate stays open.
     ///
     /// <paramref name="scale"/> is the EXTRA factor applied on top of each child's own scale, not the
-    /// parent's own scale. Callers ramp it from 1 (origin: children already drawn at their own scale)
-    /// to the destination foot scale; using the parent's own scale instead would double up with a
-    /// child that still has a non-1 own scale early in the morph and cause a start-of-morph pop.
+    /// parent's own scale. Callers ramp it between the two endpoints' child factors: at each end the
+    /// factor is that end's own parent scale when the parent is linked there, or identity when it is
+    /// not (children already carry their own explicit scale, so propagation must stay neutral to
+    /// avoid doubling up and popping). Ramping from identity at BOTH ends — the old behaviour — is
+    /// only correct when the origin is unlinked; when the origin was itself a linked parent (the
+    /// normal C+ rig for fingers/toes) it forces the propagated children to their un-propagated
+    /// vanilla size on the first frame, which is the start-of-morph "shrink to vanilla" artefact.
     /// </summary>
     public static void SetLinkedChildScaling(JObject bones, string boneName, Vector3 scale)
     {
