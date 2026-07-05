@@ -40,6 +40,80 @@ internal static class BoneJsonHelper
             ReadVec3(bone["Scaling"]     as JObject, 1f));
     }
 
+    /// <summary>
+    /// Returns a deep clone of the bone's full JSON entry from whichever source profile defines it
+    /// (destination takes priority, then origin), or null if neither has it. Used as the working-
+    /// profile template so Customize+ metadata (PropagateScale/Rotation/Translation,
+    /// ChildScalingIndependent, ChildScaling, …) survives the morph untouched.
+    /// </summary>
+    public static JObject? CloneBoneTemplate(JObject originBones, JObject destBones, string boneName)
+    {
+        if (destBones[boneName] is JObject d) return (JObject)d.DeepClone();
+        if (originBones[boneName] is JObject o) return (JObject)o.DeepClone();
+        return null;
+    }
+
+    /// <summary>
+    /// True when the bone's entry in <paramref name="bones"/> is a Customize+ "linked" scale parent
+    /// (PropagateScale set), i.e. its scale is meant to propagate to child bones. Evaluated per
+    /// endpoint (no origin/destination precedence): a morph must know the link state of BOTH ends
+    /// independently so it can ramp the child magnitude from the origin's propagated scale to the
+    /// destination's — see <see cref="SetLinkedChildScaling"/> and MorphController's BoneAnim.
+    /// </summary>
+    public static bool IsBoneLinked(JObject bones, string boneName) =>
+        bones[boneName] is JObject b && b["PropagateScale"]?.Value<bool>() == true;
+
+    /// <summary>
+    /// True when the bone's entry in <paramref name="bones"/> has Customize+ "chain" (propagate)
+    /// enabled for translation. Read per endpoint, like <see cref="IsBoneLinked"/>.
+    /// </summary>
+    public static bool IsPropagateTranslation(JObject bones, string boneName) =>
+        bones[boneName] is JObject b && b["PropagateTranslation"]?.Value<bool>() == true;
+
+    /// <summary>
+    /// True when the bone's entry in <paramref name="bones"/> has Customize+ "chain" (propagate)
+    /// enabled for rotation. Read per endpoint, like <see cref="IsBoneLinked"/>.
+    /// </summary>
+    public static bool IsPropagateRotation(JObject bones, string boneName) =>
+        bones[boneName] is JObject b && b["PropagateRotation"]?.Value<bool>() == true;
+
+    /// <summary>
+    /// Force the translation/rotation propagation ("chain") flags true on an existing working bone so
+    /// they reach Customize+.
+    ///
+    /// Confirmed by dumping the exact JSON BodyFlux sends versus the Customize+ IPC Test tab's working
+    /// profile: C+ DOES propagate translation/rotation to child bones through
+    /// SetTemporaryProfileOnCharacter (its own IPC round-trip applies a chained Head correctly). The
+    /// only difference was that BodyFlux emitted <c>PropagateRotation:false</c> — the flag is lost
+    /// through the GetProfile → clone → SetBoneTransform working document, exactly like PropagateScale
+    /// (see <see cref="SetLinkedChildScaling"/>, which re-asserts it). Unlike scale, T/R needs no
+    /// child magnitude: C+ derives the delta from the bone's own transform each frame, so re-asserting
+    /// the flag on a bone that carries a non-zero Translation/Rotation is sufficient. Only ever sets
+    /// true, never clears, so a bone that does not chain is left untouched.
+    /// </summary>
+    public static void SetPropagateFlags(JObject bones, string boneName, bool translation, bool rotation)
+    {
+        if (bones[boneName] is not JObject bone) return;
+        if (translation) bone["PropagateTranslation"] = true;
+        if (rotation)    bone["PropagateRotation"]    = true;
+    }
+
+    /// <summary>
+    /// Builds a virtual destination "Bones" node for <see cref="MorphTargetMode.TemplateOverlay"/>: a
+    /// deep clone of <paramref name="originBones"/> with every bone present in
+    /// <paramref name="overlayBones"/> replaced by that bone's entry. Bones absent from the overlay
+    /// stay identical to the origin, so <see cref="MorphController"/>'s ordinary origin/destination
+    /// interpolation leaves them static — only the overlaid bones actually animate.
+    /// </summary>
+    public static JObject BuildOverlayDestination(JObject originBones, JObject overlayBones)
+    {
+        var merged = (JObject)originBones.DeepClone();
+        foreach (var prop in overlayBones.Properties())
+            if (prop.Value is JObject overlayBone)
+                merged[prop.Name] = (JObject)overlayBone.DeepClone();
+        return merged;
+    }
+
     // ── Bone write ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -58,7 +132,7 @@ internal static class BoneJsonHelper
                 ["Rotation"]              = Vec3Json(rotation),
                 ["Scaling"]               = Vec3Json(scale),
                 ["ChildScaling"]          = Vec3Json(Vector3.One),
-                ["ChildScaleIndependent"] = false,
+                ["ChildScaleIndependent"] = false, // IPC schema name (see SetLinkedChildScaling)
                 ["PropagateTranslation"]  = false,
                 ["PropagateRotation"]     = false,
                 ["PropagateScale"]        = false
@@ -69,6 +143,48 @@ internal static class BoneJsonHelper
         WriteChannel(bone, "Translation", translation, 0f);
         WriteChannel(bone, "Rotation",    rotation,    0f);
         WriteChannel(bone, "Scaling",     scale,       1f);
+    }
+
+    /// <summary>
+    /// Expresses a Customize+ "linked" parent's child-scale magnitude explicitly so it survives the
+    /// SetTemporaryProfile round-trip and the per-frame morph.
+    ///
+    /// In linked mode (<c>ChildScalingIndependent == false</c>, <c>PropagateScale == true</c>) C+
+    /// does NOT serialise ChildScaling (<c>ShouldSerializeChildScaling() =&gt; ChildScalingIndependent</c>)
+    /// and derives the child delta from the bone's *live* animated scale. That live derivation
+    /// collapses to a no-op under BodyFlux's per-frame temporary-profile applies, so the parent
+    /// scales but its children (e.g. toes under a foot) do not follow.
+    ///
+    /// Switching the bone to an *independent* child scale makes C+ compute the child delta as
+    /// <c>(initialScale × ChildScaling) / initialScale</c> = <c>ChildScaling</c> — exact and
+    /// independent of the live pose — reproducing the linked look. PropagateScale is set here so
+    /// C+'s propagation gate stays open.
+    ///
+    /// <paramref name="scale"/> is the EXTRA factor applied on top of each child's own scale, not the
+    /// parent's own scale. Callers ramp it between the two endpoints' child factors: at each end the
+    /// factor is that end's own parent scale when the parent is linked there, or identity when it is
+    /// not (children already carry their own explicit scale, so propagation must stay neutral to
+    /// avoid doubling up and popping). Ramping from identity at BOTH ends — the old behaviour — is
+    /// only correct when the origin is unlinked; when the origin was itself a linked parent (the
+    /// normal C+ rig for fingers/toes) it forces the propagated children to their un-propagated
+    /// vanilla size on the first frame, which is the start-of-morph "shrink to vanilla" artefact.
+    /// </summary>
+    public static void SetLinkedChildScaling(JObject bones, string boneName, Vector3 scale)
+    {
+        if (bones[boneName] is not JObject bone) return;
+
+        // PropagateScale MUST be set true here, not merely inherited from the cloned template: C+'s
+        // apply gate is `doPropagate = PropagateTranslation || PropagateRotation || PropagateScale`,
+        // and a bone that fails it never propagates to children at all. GetProfile does not reliably
+        // carry PropagateScale on the cloned (destination) entry, so we assert it explicitly.
+        bone["PropagateScale"] = true;
+
+        // NOTE: the field is "ChildScaleIndependent" (no "-ing", "Scale" not "Scaling"). That is the
+        // exact name Customize+'s IPC schema (IPCBoneTransform) deserialises; the differently-spelled
+        // "ChildScalingIndependent" used inside C+'s own profile format is silently ignored over IPC.
+        bone["ChildScaleIndependent"] = true;
+        bone["ChildScaling"]          = Vec3Json(scale); // written unconditionally: an independent
+                                                          // bone must carry a valid ChildScaling.
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

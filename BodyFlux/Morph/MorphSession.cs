@@ -4,7 +4,7 @@ using System.Numerics;
 namespace BodyFlux.Morph;
 
 /// <summary>One resolved step of a running sequence (destination JSON + speed + easing).</summary>
-public readonly record struct SeqStep(string DestJson, float Speed, EasingMode Easing);
+public readonly record struct SeqStep(string DestJson, float Speed, EasingMode Easing, MorphTargetMode TargetMode);
 
 /// <summary>
 /// All the state of a single in-flight morph, bundled so the plugin can run many at once
@@ -26,6 +26,15 @@ public sealed class MorphSession
     /// <summary>Peer name for a targeted-player morph; <c>null</c> for self and Brio morphs.</summary>
     public string? NetworkTargetName;
 
+    /// <summary>
+    /// Final morphed profile JSON for a completed remote-target Simple morph. Stored when the
+    /// morph reaches 100% so <see cref="MorphEngine"/> can re-apply it every tick and hold the
+    /// destination state against the SyncManager's peer-interp, which would otherwise overwrite
+    /// it with the target's base profile and snap them back on the applier's screen.
+    /// Cleared on Reset.
+    /// </summary>
+    public string? CompletedRemoteJson;
+
     /// <summary>Per-morph speed override (sequence step / preset / chat); <c>null</c> = use the tab default.</summary>
     public float? SpeedOverride;
 
@@ -33,6 +42,15 @@ public sealed class MorphSession
     public List<SeqStep>? SeqSteps;
     public int            SeqIndex;
     public bool           SeqRunning;
+
+    /// <summary>
+    /// The full-body profile JSON that the current sequence step actually resolves to — origin ⊕
+    /// overlay for a Template Overlay step, or the plain destination profile for a Full Profile step.
+    /// The next step chains its origin from THIS, not from the step's raw DestJson: an overlay step's
+    /// DestJson is only the template's handful of bones, so chaining from it would drop every other
+    /// bone to identity and blank the C+ scaling after the first step. Set by StartSequenceStep.
+    /// </summary>
+    public string? SeqLastEffectiveJson;
 
     /// <summary>
     /// True while a Reset is animating this session back to the origin (see
@@ -48,6 +66,13 @@ public sealed class MorphSession
     public bool           GaugeInvert;
     /// <summary>Exponentially eased toward the live gauge reading each frame (avoids stepping).</summary>
     public float          SmoothedFill;
+
+    /// <summary>
+    /// True when the in-progress Reset should land on the character's real live-active profile
+    /// ("Reset Active") instead of <see cref="OriginProfileJson"/> ("Reset Origin", the default).
+    /// Set by <see cref="MorphEngine.ResetGrowth"/>, consumed and cleared in ResetSession.
+    /// </summary>
+    public bool ResetToLiveActive;
 
     // ── GPose root externalisation ────────────────────────────────────────────
     /// <summary>

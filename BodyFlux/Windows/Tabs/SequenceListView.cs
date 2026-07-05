@@ -24,10 +24,10 @@ public sealed class SequenceListView
     /// was pressed this frame (-1 if none) so the caller can start it with the right engine entry point.
     /// </summary>
     public int Draw(List<MorphSequence> sequences,
-                    ref int playingIndex, ref string addFilter,
+                    ref int playingIndex, ref string addFilter, ref MorphTargetMode addMode,
                     float defaultSpeed, bool busy, bool seqActive,
                     bool playAllowed, string? playBlockedTooltip,
-                    Action onReset,
+                    Action onReset, Action? onResetActive,
                     float bw, float scale)
     {
         var config = plugin.Configuration;
@@ -59,7 +59,7 @@ public sealed class SequenceListView
             {
                 ImGui.Indent(12 * scale);
                 DrawEditor(seq, s, busy, seqActive, isPlaying, playAllowed, playBlockedTooltip,
-                           defaultSpeed, onReset, ref addFilter, bw, scale, ref deleteIdx, ref playRequest);
+                           defaultSpeed, onReset, onResetActive, ref addFilter, ref addMode, bw, scale, ref deleteIdx, ref playRequest);
                 ImGui.Unindent(12 * scale);
             }
 
@@ -81,7 +81,8 @@ public sealed class SequenceListView
     private void DrawEditor(MorphSequence seq, int seqIndex,
                             bool busy, bool seqActive, bool isPlaying,
                             bool playAllowed, string? playBlockedTooltip,
-                            float defaultSpeed, Action onReset, ref string addFilter,
+                            float defaultSpeed, Action onReset, Action? onResetActive,
+                            ref string addFilter, ref MorphTargetMode addMode,
                             float bw, float scale, ref int deleteIdx, ref int playRequest)
     {
         var  config   = plugin.Configuration;
@@ -161,6 +162,10 @@ public sealed class SequenceListView
             }
 
             ImGui.SameLine();
+            ImGui.TextDisabled(seq.Steps[i].TargetMode == MorphTargetMode.TemplateOverlay
+                ? "(Template Overlay)" : "(Full Profile)");
+
+            ImGui.SameLine();
             using (ImRaii.Disabled(busy))
                 if (ImGui.Button("Remove")) removeIdx = i;
 
@@ -185,13 +190,27 @@ public sealed class SequenceListView
             needSave = true;
         }
 
-        // ── Add step (selecting a profile appends it immediately) ─────────────
+        // ── Add step (selecting a profile/template appends it immediately) ─────
+        ImGui.TextUnformatted("Add step target:");
+        ImGui.SameLine();
+        int addModeInt = (int)addMode;
+        using (ImRaii.Disabled(busy))
+        {
+            if (ImGui.RadioButton("Full Profile##addmode", ref addModeInt, (int)MorphTargetMode.FullProfile))
+                addMode = MorphTargetMode.FullProfile;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Template Overlay##addmode", ref addModeInt, (int)MorphTargetMode.TemplateOverlay))
+                addMode = MorphTargetMode.TemplateOverlay;
+        }
+
+        bool addOverlay = addMode == MorphTargetMode.TemplateOverlay;
         ImGui.TextUnformatted("Add step:");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         using (ImRaii.Disabled(busy))
         {
-            if (ImGui.BeginCombo("##SeqAddProfile", "— add a profile —"))
+            string comboPreview = addOverlay ? "— add a template —" : "— add a profile —";
+            if (ImGui.BeginCombo("##SeqAddProfile", comboPreview))
             {
                 if (ImGui.IsWindowAppearing()) { addFilter = ""; ImGui.SetKeyboardFocusHere(); }
                 ImGui.SetNextItemWidth(-1);
@@ -199,18 +218,42 @@ public sealed class SequenceListView
                 ImGui.Separator();
 
                 bool any = false;
-                for (int i = 0; i < plugin.SavedProfiles.Count; i++)
+                if (addOverlay)
                 {
-                    if (!string.IsNullOrEmpty(addFilter) &&
-                        !plugin.SavedProfiles[i].Name.Contains(addFilter, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    any = true;
-                    if (ImGui.Selectable(plugin.SavedProfiles[i].Name))
+                    var templates = plugin.SavedTemplates;
+                    for (int i = 0; i < templates.Count; i++)
                     {
-                        var (id, pname) = plugin.SavedProfiles[i];
-                        seq.Steps.Add(new MorphSequenceStep(id, pname, defaultSpeed, EasingMode.Linear));
-                        needSave  = true;
-                        addFilter = "";
+                        if (!string.IsNullOrEmpty(addFilter) &&
+                            !templates[i].Name.Contains(addFilter, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        any = true;
+                        if (ImGui.Selectable(templates[i].Name))
+                        {
+                            var (id, tname, ownerId) = templates[i];
+                            seq.Steps.Add(new MorphSequenceStep(id, tname, defaultSpeed, EasingMode.Linear,
+                                MorphTargetMode.TemplateOverlay, ownerId));
+                            needSave  = true;
+                            addFilter = "";
+                        }
+                    }
+                }
+                else
+                {
+                    var profiles = plugin.SavedProfiles;
+                    for (int i = 0; i < profiles.Count; i++)
+                    {
+                        if (!string.IsNullOrEmpty(addFilter) &&
+                            !profiles[i].Name.Contains(addFilter, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        any = true;
+                        if (ImGui.Selectable(profiles[i].Name))
+                        {
+                            var (id, pname) = profiles[i];
+                            seq.Steps.Add(new MorphSequenceStep(id, pname, defaultSpeed, EasingMode.Linear,
+                                MorphTargetMode.FullProfile));
+                            needSave  = true;
+                            addFilter = "";
+                        }
                     }
                 }
                 if (!any) ImGui.TextDisabled("No matches.");
@@ -230,13 +273,31 @@ public sealed class SequenceListView
             && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(playBlockedTooltip);
 
-        // Reset the morph back to the character's original profile. Always available — it's also the
-        // way to stop a running sequence and clean up.
-        ImGui.SameLine();
-        if (ImGui.Button("Reset", new Vector2(bw, 0)))
-            onReset();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Reset to the original profile (also stops a running sequence).");
+        // Reset the morph back to the character's profile. Always available — it's also the way to
+        // stop a running sequence and clean up. Player sequences get both landing states; Brio
+        // (onResetActive == null) keeps its single Reset, which has no Origin/Active distinction.
+        if (onResetActive == null)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Reset", new Vector2(bw, 0)))
+                onReset();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Reset to the original profile (also stops a running sequence).");
+        }
+        else
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Reset to Origin", new Vector2(bw * 1.4f, 0)))
+                onReset();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Restores the Origin Profile (also stops a running sequence).");
+
+            ImGui.SameLine();
+            if (ImGui.Button("Reset to Active", new Vector2(bw * 1.4f, 0)))
+                onResetActive();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Restores whatever profile is really active on your character (also stops a running sequence).");
+        }
 
         ImGui.SameLine();
         using (ImRaii.Disabled(busy || isPlaying)) // can't delete the active sequence — Stop it first

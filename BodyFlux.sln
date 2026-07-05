@@ -1,3 +1,4 @@
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.4.11612.150
@@ -5,6 +6,8 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BodyFlux", "BodyFlux\BodyFlux.csproj", "{298C724E-3ECC-46A1-A187-896AD641A0AD}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BodyFluxRelay", "BodyFluxRelay\BodyFluxRelay.csproj", "{FDA8F514-DD28-4593-B043-5736C5A951DD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BodyFlux.Tests", "BodyFlux.Tests\BodyFlux.Tests.csproj", "{F078CE08-E01D-48E6-A36F-4822C3A69423}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -40,6 +43,18 @@ Global
 		{FDA8F514-DD28-4593-B043-5736C5A951DD}.Release|x64.Build.0 = Release|Any CPU
 		{FDA8F514-DD28-4593-B043-5736C5A951DD}.Release|x86.ActiveCfg = Release|Any CPU
 		{FDA8F514-DD28-4593-B043-5736C5A951DD}.Release|x86.Build.0 = Release|Any CPU
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Debug|Any CPU.Build.0 = Debug|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Debug|x64.ActiveCfg = Debug|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Debug|x64.Build.0 = Debug|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Debug|x86.ActiveCfg = Debug|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Debug|x86.Build.0 = Debug|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Release|Any CPU.ActiveCfg = Release|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Release|Any CPU.Build.0 = Release|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Release|x64.ActiveCfg = Release|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Release|x64.Build.0 = Release|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Release|x86.ActiveCfg = Release|x64
+		{F078CE08-E01D-48E6-A36F-4822C3A69423}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -24,7 +24,18 @@ public sealed class MorphController
     private readonly record struct BoneAnim(
         Vector3 StartTranslation, Vector3 EndTranslation,
         Vector3 StartRotation,    Vector3 EndRotation,
-        Vector3 StartScale,       Vector3 EndScale);
+        Vector3 StartScale,       Vector3 EndScale,
+        // True when the bone is a linked ("propagate scale") parent at EITHER endpoint, so its
+        // child magnitude must be driven explicitly (see BoneJsonHelper.SetLinkedChildScaling).
+        bool    AnyLinked,
+        // The extra child-scale factor to propagate at each endpoint: the parent's own scale when
+        // linked there, else identity. Ramped between the two so propagated children (fingers/toes)
+        // hold the origin's size at t=0 instead of snapping to their un-propagated vanilla size.
+        Vector3 StartChildScale,  Vector3 EndChildScale,
+        // "Chain" (propagate translation/rotation) at EITHER endpoint. Re-asserted onto the working
+        // bone because the flag is otherwise lost through the profile round-trip (confirmed by JSON
+        // dump: BodyFlux was emitting PropagateRotation:false). See BoneJsonHelper.SetPropagateFlags.
+        bool    PropagateTranslation, bool PropagateRotation);
 
     // ── State ─────────────────────────────────────────────────────────────────
 
@@ -121,24 +132,89 @@ public sealed class MorphController
             var (startT, startR, startS) = BoneJsonHelper.ReadBoneTransform(originBones, bone);
             var (destT,  destR,  destS)  = BoneJsonHelper.ReadBoneTransform(destBones,   bone);
 
+            // Link ("propagate scale") state is read per-endpoint, NOT with destination precedence:
+            // a bone can be a linked parent in the origin, the destination, or both, and each end
+            // contributes its own child-scale factor. Ramping the propagated child magnitude between
+            // those two ends is what stops fingers/toes from collapsing to their un-propagated
+            // vanilla size at the start of a morph between two linked rigs (the "shrink to vanilla"
+            // artefact). Handles the mixed cases too: linked→unlinked lands the children on their own
+            // explicit destination scale, unlinked→linked reproduces the original dest-only fix.
+            bool originLinked = BoneJsonHelper.IsBoneLinked(originBones, bone);
+            bool destLinked   = BoneJsonHelper.IsBoneLinked(destBones,   bone);
+
+            // "Chain" translation/rotation, read per endpoint. Kept on for the whole morph if either
+            // end chains, so children track the parent as its move/rotation ramps in. C+ derives the
+            // child delta from the bone's own transform, so an all-identity end simply won't propagate.
+            bool propT = BoneJsonHelper.IsPropagateTranslation(originBones, bone)
+                      || BoneJsonHelper.IsPropagateTranslation(destBones, bone);
+            bool propR = BoneJsonHelper.IsPropagateRotation(originBones, bone)
+                      || BoneJsonHelper.IsPropagateRotation(destBones, bone);
+
             _boneAnims[bone] = new BoneAnim(
                 StartTranslation: startT, EndTranslation: destT,
                 StartRotation:    startR, EndRotation:    destR,
-                StartScale:       startS, EndScale:       destS);
+                StartScale:       startS, EndScale:       destS,
+                AnyLinked:        originLinked || destLinked,
+                // Child factor at each end = that end's own parent scale when linked (C+ propagates
+                // the parent's scale to its children), else identity so an end whose children carry
+                // their own explicit scale is not doubled up. See SetLinkedChildScaling.
+                StartChildScale:  originLinked ? startS : Vector3.One,
+                EndChildScale:    destLinked   ? destS  : Vector3.One,
+                PropagateTranslation: propT, PropagateRotation: propR);
         }
 
         // Initialise the working document: ensure all animated bones exist at their
         // start values before the first tick so C+ sees a valid document immediately.
+        //
+        // IMPORTANT: when profileBase already carries a "Bones" node, we must reuse that exact
+        // object — never re-assign it to itself. Newtonsoft clones a JToken that is assigned to a
+        // property it already belongs to, so `_workingProfile["Bones"] = _workingProfile["Bones"]`
+        // would leave the local reference pointing at an orphaned copy while the document keeps a
+        // now-empty clone. Every seed below (CloneBoneTemplate, SetLinkedChildScaling,
+        // SetPropagateFlags) would then write to the orphan and never reach C+, so the morph would
+        // fall back to Tick creating bare bones each frame — dropping all propagation flags. Only
+        // create-and-attach a fresh node when one is genuinely absent.
         _workingProfile = profileBase;
-        var workBones   = _workingProfile["Bones"] as JObject ?? new JObject();
-        _workingProfile["Bones"] = workBones;
+        if (_workingProfile["Bones"] is not JObject workBones)
+        {
+            workBones = new JObject();
+            _workingProfile["Bones"] = workBones;
+        }
 
         foreach (var (bone, anim) in _boneAnims)
         {
             // When externalising the root, never write it into the C+ profile — Brio owns it.
             if (_externaliseRoot && bone == RootBone) continue;
+
+            // Seed the working bone from the source entry so all C+ metadata (PropagateScale/
+            // Rotation/Translation, ChildScalingIndependent, etc.) is preserved; SetBoneTransform
+            // then only animates T/R/S on top via its existing-bone (WriteChannel) path.
+            // Endpoint choice: prefer the destination entry, fall back to origin. A linked flag
+            // (e.g. PropagateScale) is a boolean and can't be interpolated, so the morph ends in
+            // the destination's link state — the intuitive result when morphing *toward* a profile.
+            // Do not "simplify" this to origin-first.
+            var template = BoneJsonHelper.CloneBoneTemplate(originBones, destBones, bone);
+            if (template != null)
+                workBones[bone] = template;
+
             BoneJsonHelper.SetBoneTransform(workBones, bone,
                 anim.StartTranslation, anim.StartRotation, anim.StartScale);
+
+            // Linked ("propagate scale") parents need their child magnitude expressed explicitly —
+            // see SetLinkedChildScaling. Seed it at the origin's child factor (the parent's own
+            // origin scale when linked there, else identity), so a rig that already propagated to
+            // its children at the origin keeps that size on the first frame instead of snapping the
+            // children to vanilla. It then ramps toward the destination factor in Tick.
+            if (anim.AnyLinked)
+                BoneJsonHelper.SetLinkedChildScaling(workBones, bone, anim.StartChildScale);
+
+            // Re-assert the translation/rotation "chain" flags so children (eyes, hair, cheeks …)
+            // follow the parent's move/rotation. The flag is lost through the working-document build
+            // (dump confirmed PropagateRotation:false was reaching C+). Constant for the whole morph,
+            // so set once here — Tick's WriteChannel path leaves the flags intact.
+            if (anim.PropagateTranslation || anim.PropagateRotation)
+                BoneJsonHelper.SetPropagateFlags(workBones, bone,
+                    anim.PropagateTranslation, anim.PropagateRotation);
         }
 
         // Seed the externalised root scale at its start value so the very first tick is correct.
@@ -280,10 +356,21 @@ public sealed class MorphController
                 continue;
             }
 
+            var scale = Vector3.Lerp(anim.StartScale, anim.EndScale, t);
             BoneJsonHelper.SetBoneTransform(workBones, bone,
                 translation: Vector3.Lerp(anim.StartTranslation, anim.EndTranslation, t),
                 rotation:    Vector3.Lerp(anim.StartRotation,    anim.EndRotation,    t),
-                scale:       Vector3.Lerp(anim.StartScale,       anim.EndScale,       t));
+                scale:       scale);
+
+            // Drive the linked parent's child propagation so its children (e.g. toes under a scaled
+            // foot) follow. ChildScaling is the *extra* factor applied on top of each child's own
+            // scale, so it ramps between the two endpoints' child factors (StartChildScale →
+            // EndChildScale). Each factor is the parent's own scale when linked at that end, or
+            // identity when unlinked there — an unlinked end stays neutral so a child that carries
+            // its own explicit scale is not doubled up. See BoneJsonHelper.SetLinkedChildScaling.
+            if (anim.AnyLinked)
+                BoneJsonHelper.SetLinkedChildScaling(workBones, bone,
+                    Vector3.Lerp(anim.StartChildScale, anim.EndChildScale, t));
         }
 
         return _workingProfile!.ToString(Formatting.None);

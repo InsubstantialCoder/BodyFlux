@@ -1,7 +1,10 @@
 using System;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
+using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
+using Dalamud.Interface.Utility.Raii;
 
 namespace BodyFlux.Windows.Tabs;
 
@@ -27,8 +30,12 @@ public sealed class SyncTabView
 
     public void Draw()
     {
+        using var scroll = ImRaii.Child("##SyncScroll", new Vector2(0, 0), false);
+        if (!scroll) return;
+
         float bw     = 90 * ImGuiHelpers.GlobalScale;
         float labelW = 90 * ImGuiHelpers.GlobalScale;
+        float iconSz = ImGui.GetFrameHeight(); // square copy button
         var   config = plugin.Configuration;
 
         ImGui.Spacing();
@@ -67,9 +74,12 @@ public sealed class SyncTabView
         // ── Sync Key row ──────────────────────────────────────────────────────
         float inputW = ImGui.GetContentRegionAvail().X - labelW - 8 * ImGuiHelpers.GlobalScale;
 
+        bool isActive = plugin.IsNetworkActive;
+
         ImGui.TextUnformatted("Sync Key:");
         ImGui.SameLine(labelW);
-        ImGui.SetNextItemWidth(inputW - bw * 2 - 8 * ImGuiHelpers.GlobalScale);
+        if (isActive) ImGui.BeginDisabled();
+        ImGui.SetNextItemWidth(inputW - bw * 2 - iconSz - 8 * ImGuiHelpers.GlobalScale);
         string pairKey = config.PairKey;
         if (ImGui.InputText("##SyncKey", ref pairKey, 64))
         {
@@ -83,6 +93,13 @@ public sealed class SyncTabView
             config.PairKey = GeneratePairKey();
             config.Save();
         }
+        if (isActive) ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        if (ImGuiComponents.IconButton("##copySyncKey", FontAwesomeIcon.Copy))
+            ImGui.SetClipboardText(config.PairKey);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Copy Sync Key to clipboard");
 
         ImGui.SameLine();
         if (plugin.IsNetworkActive)
@@ -90,7 +107,7 @@ public sealed class SyncTabView
             if (ImGui.Button("Disconnect", new Vector2(bw, 0)))
                 plugin.DisconnectNetworkSync();
         }
-        else if (plugin.IsNetworkIdleDisconnected)
+        else if (plugin.IsNetworkIdleDisconnected || plugin.IsNetworkQuotaExhausted)
         {
             if (ImGui.Button("Reconnect", new Vector2(bw, 0)))
                 plugin.ApplyNetworkSyncConfig();
@@ -108,10 +125,19 @@ public sealed class SyncTabView
             ? new Vector4(0.3f, 0.9f, 0.4f, 1f)
             : status.StartsWith("Connecting")
                 ? new Vector4(0.9f, 0.8f, 0.2f, 1f)
-                : status == "Disconnected (idle)"
-                    ? new Vector4(0.9f, 0.6f, 0.2f, 1f)  // amber — auto-disconnected by inactivity
+                : status is "Disconnected (idle)" or "Daily quota exceeded"
+                    ? new Vector4(0.9f, 0.6f, 0.2f, 1f)  // amber — auto-disconnected
                     : new Vector4(0.7f, 0.7f, 0.7f, 1f);
         ImGui.TextColored(statusColor, $"Status: {status}");
+
+        // ── Daily quota exhausted notice ──────────────────────────────────────
+        if (plugin.IsNetworkQuotaExhausted)
+        {
+            ImGui.PushTextWrapPos(0f);
+            ImGui.TextColored(new Vector4(0.9f, 0.4f, 0.2f, 1f),
+                "Daily relay quota exceeded. Sync is paused — please try again tomorrow.");
+            ImGui.PopTextWrapPos();
+        }
 
         // ── Lone-connection auto-disconnect notice ────────────────────────────
         // The relay only needs to carry frames between connected players, so a lone connection is
@@ -129,6 +155,9 @@ public sealed class SyncTabView
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
+        var maxPeers = plugin.NetworkMaxPeers;
+        if (maxPeers.HasValue)
+            ImGui.TextDisabled($"Up to {maxPeers} players can share the same Sync Key simultaneously.");
         ImGui.TextUnformatted("Connected users:");
 
         var peers     = plugin.ConnectedPeers;

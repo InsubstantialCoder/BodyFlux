@@ -36,6 +36,9 @@ public sealed class KeybindsTabView
 
     public void Draw()
     {
+        using var scroll = ImRaii.Child("##KeybindsScroll", new Vector2(0, 0), false);
+        if (!scroll) return;
+
         var   config = plugin.Configuration;
         float scale  = ImGuiHelpers.GlobalScale;
         float bw     = 90 * scale;

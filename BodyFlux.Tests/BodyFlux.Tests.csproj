@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsPublishable>false</IsPublishable>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BodyFlux\BodyFlux.csproj" />
+  </ItemGroup>
+
+  <!-- BodyFlux compiles against the Newtonsoft.Json build bundled with the installed Dalamud
+       (via Dalamud.NET.Sdk), which is ahead of the public NuGet release. Point the test project
+       at that same DLL so JObject/JToken identity matches at test runtime — otherwise the NuGet-
+       restored Newtonsoft.Json.dll gets copied to the output instead and calls into BodyFlux's
+       compiled code throw MissingMethodException for members added after the NuGet release. -->
+  <PropertyGroup>
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">$(appdata)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(DalamudLibPath)Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- NuGet's own conflict resolution still prefers the Newtonsoft.Json.dll pulled in
+       transitively by Microsoft.NET.Test.Sdk over the HintPath reference above, so the wrong
+       (ABI-incompatible) copy lands in the output. Overwrite it post-build to guarantee the
+       test host loads the same build BodyFlux.dll was compiled against. -->
+  <Target Name="UseDalamudNewtonsoftJson" AfterTargets="Build;Publish">
+    <Copy SourceFiles="$(DalamudLibPath)Newtonsoft.Json.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="false" />
+  </Target>
+
+</Project>

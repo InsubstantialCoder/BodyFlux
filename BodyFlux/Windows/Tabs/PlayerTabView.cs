@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using BodyFlux.Morph;
+using BodyFlux.Services;
 
 namespace BodyFlux.Windows.Tabs;
 
@@ -17,9 +20,11 @@ public sealed class PlayerTabView
     private readonly SequenceListView  seqList;
     private readonly Action            onResetProfileCache; // ask MainWindow to refresh profiles next OnOpen
 
-    private string _profileFilter   = "";
-    private int    _seqPlayingIndex = -1; // sequence active/resting (-1 = none)
-    private string _seqAddFilter    = ""; // filter for the "Add step" picker
+    private string          _profileFilter   = "";
+    private string          _originProfileFilter = ""; // filter for the Default Origin Profile picker
+    private int             _seqPlayingIndex = -1; // sequence active/resting (-1 = none)
+    private string          _seqAddFilter    = ""; // filter for the "Add step" picker
+    private MorphTargetMode _seqAddMode      = MorphTargetMode.FullProfile; // "Add step" target mode
 
     public PlayerTabView(Plugin plugin, SequenceListView seqList, Action onResetProfileCache)
     {
@@ -42,12 +47,15 @@ public sealed class PlayerTabView
         using (var tab = ImRaii.TabItem("Sequences"))
             if (tab) DrawSequencesSubTab();
 
-        using (var tab = ImRaii.TabItem("Gauge Link"))
-            if (tab) DrawGaugeLinkSubTab();
+        using (var tab = ImRaii.TabItem("Gauge Bind"))
+            if (tab) DrawGaugeBindSubTab();
     }
 
     private void DrawMorphSubTab()
     {
+        using var scroll = ImRaii.Child("##PlayerMorphScroll", new Vector2(0, 0), false);
+        if (!scroll) return;
+
         bool cpOk = plugin.IsCustomizePlusAvailable;
 
         // ── Requirements ──────────────────────────────────────────────────────
@@ -71,12 +79,18 @@ public sealed class PlayerTabView
         ImGui.SameLine();
         ImGui.TextColored(new Vector4(0.4f, 0.9f, 0.6f, 1f), plugin.ActiveProfileName);
 
+        var originConfig = plugin.Configuration;
         ImGui.Spacing();
         ImGui.PushTextWrapPos(0f);
-        ImGui.TextDisabled(
-            "This is the Customize+ Profile currently applied to your character. " +
-            "It will be used as the starting point for the morph.");
+        ImGui.TextDisabled(originConfig.OriginProfileId == null
+            ? "This is the Customize+ Profile currently applied to your character. " +
+              "It will be used as the starting point for the morph."
+            : "This is the Customize+ Profile currently applied to your character. " +
+              "It is overridden below as the morph's starting point.");
         ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        DrawOriginProfilePicker(originConfig);
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -99,58 +113,122 @@ public sealed class PlayerTabView
         DrawHistory();
     }
 
+    /// <summary>
+    /// Picker for pinning a saved Customize+ profile as the always-used origin for the local
+    /// player's Single and Sequence morphs, overriding the live-active-profile read. Reverse and
+    /// "Reset to Origin" both land on this pinned profile; "Reset to Active" ignores it and
+    /// restores whatever's really active on the character.
+    /// </summary>
+    private void DrawOriginProfilePicker(Configuration config)
+    {
+        ImGui.TextUnformatted("Origin Profile:");
+        ImGui.Spacing();
+
+        var names = new List<string> { "— use live active profile (default) —" };
+        names.AddRange(plugin.SavedProfiles.Select(p => p.Name));
+
+        int idx = 0;
+        if (config.OriginProfileId is { } pinnedId)
+        {
+            for (int i = 0; i < plugin.SavedProfiles.Count; i++)
+                if (plugin.SavedProfiles[i].Id == pinnedId) { idx = i + 1; break; }
+        }
+        int prevIdx = idx;
+
+        using (ImRaii.Disabled(plugin.IsMorphing))
+        {
+            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+            UiHelpers.DrawFilterableCombo("##OriginProfile", "##OriginProfileFilter", names,
+                ref idx, ref _originProfileFilter, names[0]);
+        }
+
+        if (idx != prevIdx)
+        {
+            config.OriginProfileId = idx == 0 ? null : plugin.SavedProfiles[idx - 1].Id;
+            config.Save();
+        }
+
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(
+            "When set, every morph on yourself (Single and Sequences) always starts from this saved " +
+            "profile instead of whatever's currently active on your character. Reverse and Reset to " +
+            "Origin both play back toward it; Reset to Active ignores it and restores your character's " +
+            "real active profile instead.");
+        ImGui.PopTextWrapPos();
+    }
+
     private void DrawOptionsSimple()
     {
         float bw     = 90 * ImGuiHelpers.GlobalScale;
         bool  busy   = plugin.IsMorphing;
         var   config = plugin.Configuration;
 
+        // ── Target mode selector ──────────────────────────────────────────────
+        ImGui.TextUnformatted("Morph Target:");
+        ImGui.Spacing();
+
+        using (ImRaii.Disabled(busy))
+        {
+            int  targetModeInt     = (int)config.MorphTargetMode;
+            bool targetModeChanged = false;
+
+            if (ImGui.RadioButton("Full Profile", ref targetModeInt, (int)MorphTargetMode.FullProfile))
+                targetModeChanged = true;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Template Overlay", ref targetModeInt, (int)MorphTargetMode.TemplateOverlay))
+                targetModeChanged = true;
+
+            if (targetModeChanged)
+            {
+                config.MorphTargetMode = (MorphTargetMode)targetModeInt;
+                config.Save();
+            }
+        }
+
+        bool overlay = config.MorphTargetMode == MorphTargetMode.TemplateOverlay;
+
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(0f);
+        string targetModeDesc = overlay
+            ? "Blends only the bones defined in the selected Customize+ Template onto your current profile — every other bone stays untouched."
+            : "Applies the whole selected profile as the destination — bones not present in it reset to default.";
+        ImGui.TextDisabled(targetModeDesc);
+        ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
         // ── Destination selector ──────────────────────────────────────────────
-        ImGui.TextUnformatted("Destination Profile:");
+        ImGui.TextUnformatted(overlay ? "Overlay Template:" : "Destination Profile:");
+        if (overlay)
+        {
+            ImGui.PushTextWrapPos(0f);
+            ImGui.TextDisabled("Only templates attached to at least one Customize+ profile show up here.");
+            ImGui.PopTextWrapPos();
+        }
 
         float comboWidth = ImGui.GetContentRegionAvail().X - (bw + 8 * ImGuiHelpers.GlobalScale);
         ImGui.SetNextItemWidth(comboWidth);
 
-        string preview = plugin.SelectedProfileIndex >= 0 && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count
-            ? plugin.SavedProfiles[plugin.SelectedProfileIndex].Name
-            : "— select a profile —";
-
         using (ImRaii.Disabled(busy))
         {
-            if (ImGui.BeginCombo("##DestProfile", preview))
+            if (overlay)
             {
-                if (ImGui.IsWindowAppearing())
-                {
-                    _profileFilter = "";
-                    ImGui.SetKeyboardFocusHere();
-                }
-
-                ImGui.SetNextItemWidth(-1);
-                ImGui.InputText("##ProfileFilter", ref _profileFilter, 128);
-                ImGui.Separator();
-
-                bool anyVisible = false;
-                for (int i = 0; i < plugin.SavedProfiles.Count; i++)
-                {
-                    if (!string.IsNullOrEmpty(_profileFilter) &&
-                        !plugin.SavedProfiles[i].Name.Contains(_profileFilter, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    anyVisible = true;
-                    bool selected = plugin.SelectedProfileIndex == i;
-                    if (ImGui.Selectable(plugin.SavedProfiles[i].Name, selected))
-                    {
-                        plugin.SelectedProfileIndex = i;
-                        _profileFilter = "";
-                    }
-                    if (selected)
-                        ImGui.SetItemDefaultFocus();
-                }
-
-                if (!anyVisible)
-                    ImGui.TextDisabled("No matches.");
-
-                ImGui.EndCombo();
+                var names = plugin.SavedTemplates.Select(t => t.Name).ToList();
+                int  idx  = plugin.SelectedTemplateIndex;
+                UiHelpers.DrawFilterableCombo("##DestTemplate", "##TemplateFilter", names,
+                    ref idx, ref _profileFilter, "— select a template —");
+                plugin.SelectedTemplateIndex = idx;
+            }
+            else
+            {
+                var names = plugin.SavedProfiles.Select(p => p.Name).ToList();
+                int  idx  = plugin.SelectedProfileIndex;
+                UiHelpers.DrawFilterableCombo("##DestProfile", "##ProfileFilter", names,
+                    ref idx, ref _profileFilter, "— select a profile —");
+                plugin.SelectedProfileIndex = idx;
             }
         }
 
@@ -160,10 +238,11 @@ public sealed class PlayerTabView
             if (ImGui.Button("Refresh", new Vector2(bw, 0)))
             {
                 plugin.RefreshProfiles();
-                plugin.SelectedProfileIndex = -1;
+                plugin.SelectedProfileIndex  = -1;
+                plugin.SelectedTemplateIndex = -1;
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip("Reload your Customize+ profile list\nfrom the latest saved profiles.");
+                ImGui.SetTooltip("Reload your Customize+ profile and template list\nfrom the latest saved profiles.");
         }
 
         ImGui.Spacing();
@@ -367,38 +446,76 @@ public sealed class PlayerTabView
         }
         else
         {
-            bool canStart = plugin.SelectedProfileIndex >= 0
-                         && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count
-                         && plugin.Progress < 1f
-                         && !plugin.IsGaugeMorphing;
+            bool hasDestination = plugin.Configuration.MorphTargetMode == MorphTargetMode.TemplateOverlay
+                ? plugin.SelectedTemplateIndex >= 0 && plugin.SelectedTemplateIndex < plugin.SavedTemplates.Count
+                : plugin.SelectedProfileIndex  >= 0 && plugin.SelectedProfileIndex  < plugin.SavedProfiles.Count;
+            bool canStart = hasDestination && plugin.Progress < 1f && !plugin.IsGaugeMorphing;
 
-            using (ImRaii.Disabled(!canStart))
+            string? target     = plugin.TargetPlayerName;
+            bool    isTargeted = !string.IsNullOrEmpty(target) && plugin.IsNetworkActive;
+            var     consent    = isTargeted ? plugin.GetConsentForTarget(target!) : ConsentStatus.Granted;
+
+            if (consent == ConsentStatus.Pending)
             {
-                if (ImGui.Button("Apply", new Vector2(bw, 0)))
-                    plugin.StartGrowth();
+                using (ImRaii.Disabled(true))
+                    ImGui.Button("Waiting…", new Vector2(bw * 1.5f, 0));
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip($"Waiting for {target} to respond to your request…");
+            }
+            else
+            {
+                string label = consent == ConsentStatus.Idle && isTargeted ? "Request" : "Apply";
+                using (ImRaii.Disabled(!canStart))
+                {
+                    if (ImGui.Button(label, new Vector2(bw, 0)))
+                    {
+                        if (consent == ConsentStatus.Idle && isTargeted)
+                            plugin.RequestMorphConsent(target!);
+                        else
+                            plugin.StartGrowth();
+                    }
+                }
+
+                if (consent == ConsentStatus.Idle && isTargeted && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip($"Send a consent request to {target} before applying the morph.");
             }
         }
 
-        ImGui.SameLine();
-        if (ImGui.Button("Reset", new Vector2(bw, 0)))
-        {
-            plugin.ResetGrowth();
-            onResetProfileCache();
-        }
 
         bool done = !busy && !plugin.IsPaused && plugin.BoneAnimCount > 0 && !plugin.IsGaugeMorphing;
 
+        if (busy || plugin.IsPaused || done)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Reverse", new Vector2(bw, 0)))
+                plugin.ReverseGrowth();
+        }
+
+        // ── Reset row: always on its own line below Play/Pause/Apply + Reverse ─
+        if (ImGui.Button("Reset to Origin", new Vector2(bw * 1.4f, 0)))
+        {
+            plugin.ResetGrowth(toActiveProfile: false);
+            onResetProfileCache();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores the Origin Profile (pinned, or whatever was active when the last morph began). Works at any time.");
+
         ImGui.SameLine();
-        if ((busy || plugin.IsPaused || done) && ImGui.Button("Reverse", new Vector2(bw, 0)))
-            plugin.ReverseGrowth();
+        if (ImGui.Button("Reset to Active", new Vector2(bw * 1.4f, 0)))
+        {
+            plugin.ResetGrowth(toActiveProfile: true);
+            onResetProfileCache();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores whatever Customize+ profile is really active on your character right now. Works at any time.");
 
         // ── Completion banner ─────────────────────────────────────────────────
         if (done)
         {
             string? banner = plugin.CurrentMorphMode switch
             {
-                MorphMode.Simple     when plugin.Progress >= 1f => "Morph complete! Press Reset to restore the original Profile.",
-                MorphMode.LoopSingle when plugin.Progress <= 0f => "Loop complete! You are back at the starting Profile. Press Reset to clean up.",
+                MorphMode.Simple     when plugin.Progress >= 1f => "Morph complete! Press Reset to Origin or Reset to Active to restore your profile.",
+                MorphMode.LoopSingle when plugin.Progress <= 0f => "Loop complete! You are back at the starting Profile. Press Reset to Origin or Reset to Active to clean up.",
                 _                                               => null
             };
 
@@ -440,7 +557,7 @@ public sealed class PlayerTabView
             ImGui.SameLine();
             ImGui.TextUnformatted(entry.ProfileName);
             ImGui.SameLine();
-            ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing)})");
+            ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing)}  {UiHelpers.TargetModeShort(entry.TargetMode)})");
         }
 
         if (toApply != null)
@@ -449,6 +566,9 @@ public sealed class PlayerTabView
 
     private void DrawPresetsTab()
     {
+        using var scroll = ImRaii.Child("##PlayerPresetScroll", new Vector2(0, 0), false);
+        if (!scroll) return;
+
         var   config = plugin.Configuration;
         bool  busy   = plugin.IsMorphing;
         float bw     = 90 * ImGuiHelpers.GlobalScale;
@@ -456,16 +576,17 @@ public sealed class PlayerTabView
         ImGui.Spacing();
         ImGui.PushTextWrapPos(0f);
         ImGui.TextDisabled(
-            "Save up to 20 morph configurations for quick access. " +
-            "Use /bodyflux 1–20 to apply from chat.");
+            $"Save up to {Configuration.PresetSlots} morph configurations for quick access. " +
+            $"Use /bodyflux 1–{Configuration.PresetSlots} to apply from chat.");
         ImGui.PopTextWrapPos();
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        bool canSave = plugin.SelectedProfileIndex >= 0
-                    && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count;
+        bool canSave = config.MorphTargetMode == MorphTargetMode.TemplateOverlay
+            ? plugin.SelectedTemplateIndex >= 0 && plugin.SelectedTemplateIndex < plugin.SavedTemplates.Count
+            : plugin.SelectedProfileIndex  >= 0 && plugin.SelectedProfileIndex  < plugin.SavedProfiles.Count;
 
         for (int i = 0; i < Configuration.PresetSlots; i++)
         {
@@ -498,7 +619,7 @@ public sealed class PlayerTabView
             {
                 ImGui.TextUnformatted(preset!.ProfileName);
                 ImGui.SameLine();
-                ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing)})");
+                ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing)}  {UiHelpers.TargetModeShort(preset.TargetMode)})");
             }
             else
             {
@@ -509,6 +630,9 @@ public sealed class PlayerTabView
 
     private void DrawSequencesSubTab()
     {
+        using var scroll = ImRaii.Child("##PlayerSeqScroll", new Vector2(0, 0), false);
+        if (!scroll) return;
+
         var   config = plugin.Configuration;
         float scale  = ImGuiHelpers.GlobalScale;
         float bw     = 90 * scale;
@@ -533,18 +657,20 @@ public sealed class PlayerTabView
         ImGui.Spacing();
 
         int playRequest = seqList.Draw(
-            config.Sequences, ref _seqPlayingIndex, ref _seqAddFilter,
+            config.Sequences, ref _seqPlayingIndex, ref _seqAddFilter, ref _seqAddMode,
             config.GrowthSpeed, busy, seqActive, playAllowed: true, null,
-            onReset: plugin.ResetGrowth, bw, scale);
+            onReset: () => plugin.ResetGrowth(toActiveProfile: false),
+            onResetActive: () => plugin.ResetGrowth(toActiveProfile: true),
+            bw, scale);
 
         if (playRequest >= 0 && plugin.StartSequence(config.Sequences[playRequest]))
             _seqPlayingIndex = playRequest;
 
         if (!seqActive) return;
-        DrawSequenceFooter(bw, scale, "Sequence complete — press Stop to restore your original profile.");
+        DrawSequenceFooter(bw, scale, "Sequence complete — press Reset to Origin or Reset to Active to restore your profile.");
     }
 
-    private void DrawGaugeLinkSubTab()
+    private void DrawGaugeBindSubTab()
     {
         var   config = plugin.Configuration;
         float scale  = ImGuiHelpers.GlobalScale;
@@ -571,50 +697,75 @@ public sealed class PlayerTabView
             return;
         }
 
-        // ── Destination profile ───────────────────────────────────────────────
-        ImGui.TextUnformatted("Destination Profile:");
-        ImGui.SetNextItemWidth(-1);
+        // ── Active profile / Origin ───────────────────────────────────────────
+        ImGui.TextUnformatted("Active Profile:");
+        ImGui.SameLine();
+        ImGui.TextColored(new Vector4(0.4f, 0.9f, 0.6f, 1f), plugin.ActiveProfileName);
 
-        string preview = plugin.SelectedProfileIndex >= 0 && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count
-            ? plugin.SavedProfiles[plugin.SelectedProfileIndex].Name
-            : "— select a profile —";
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(0f);
+        ImGui.TextDisabled(config.OriginProfileId == null
+            ? "This is the Customize+ Profile currently applied to your character. " +
+              "It will be used as the starting point for the gauge morph."
+            : "This is the Customize+ Profile currently applied to your character. " +
+              "It is overridden below as the gauge morph's starting point.");
+        ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        using (ImRaii.Disabled(bound))
+            DrawOriginProfilePicker(config);
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // ── Target mode selector ──────────────────────────────────────────────
+        ImGui.TextUnformatted("Morph Target:");
+        ImGui.Spacing();
 
         using (ImRaii.Disabled(bound))
         {
-            if (ImGui.BeginCombo("##GaugeDestProfile", preview))
+            int  targetModeInt     = (int)config.MorphTargetMode;
+            bool targetModeChanged = false;
+
+            if (ImGui.RadioButton("Full Profile", ref targetModeInt, (int)MorphTargetMode.FullProfile))
+                targetModeChanged = true;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Template Overlay", ref targetModeInt, (int)MorphTargetMode.TemplateOverlay))
+                targetModeChanged = true;
+
+            if (targetModeChanged)
             {
-                if (ImGui.IsWindowAppearing())
-                {
-                    _profileFilter = "";
-                    ImGui.SetKeyboardFocusHere();
-                }
+                config.MorphTargetMode = (MorphTargetMode)targetModeInt;
+                config.Save();
+            }
+        }
 
-                ImGui.SetNextItemWidth(-1);
-                ImGui.InputText("##GaugeProfileFilter", ref _profileFilter, 128);
-                ImGui.Separator();
+        bool overlay = config.MorphTargetMode == MorphTargetMode.TemplateOverlay;
 
-                bool anyVisible = false;
-                for (int i = 0; i < plugin.SavedProfiles.Count; i++)
-                {
-                    if (!string.IsNullOrEmpty(_profileFilter) &&
-                        !plugin.SavedProfiles[i].Name.Contains(_profileFilter, StringComparison.OrdinalIgnoreCase))
-                        continue;
+        ImGui.Spacing();
 
-                    anyVisible = true;
-                    bool selected = plugin.SelectedProfileIndex == i;
-                    if (ImGui.Selectable(plugin.SavedProfiles[i].Name, selected))
-                    {
-                        plugin.SelectedProfileIndex = i;
-                        _profileFilter = "";
-                    }
-                    if (selected)
-                        ImGui.SetItemDefaultFocus();
-                }
+        // ── Destination ────────────────────────────────────────────────────────
+        ImGui.TextUnformatted(overlay ? "Overlay Template:" : "Destination Profile:");
+        ImGui.SetNextItemWidth(-1);
 
-                if (!anyVisible)
-                    ImGui.TextDisabled("No matches.");
-
-                ImGui.EndCombo();
+        using (ImRaii.Disabled(bound))
+        {
+            if (overlay)
+            {
+                var names = plugin.SavedTemplates.Select(t => t.Name).ToList();
+                int  idx  = plugin.SelectedTemplateIndex;
+                UiHelpers.DrawFilterableCombo("##GaugeDestTemplate", "##GaugeTemplateFilter", names,
+                    ref idx, ref _profileFilter, "— select a template —");
+                plugin.SelectedTemplateIndex = idx;
+            }
+            else
+            {
+                var names = plugin.SavedProfiles.Select(p => p.Name).ToList();
+                int  idx  = plugin.SelectedProfileIndex;
+                UiHelpers.DrawFilterableCombo("##GaugeDestProfile", "##GaugeProfileFilter", names,
+                    ref idx, ref _profileFilter, "— select a profile —");
+                plugin.SelectedProfileIndex = idx;
             }
         }
 
@@ -689,10 +840,11 @@ public sealed class PlayerTabView
         else
         {
             // Gauge morphs need a clean, idle self-session and can't run in GPose.
-            bool profileSel = plugin.SelectedProfileIndex >= 0
-                           && plugin.SelectedProfileIndex < plugin.SavedProfiles.Count;
+            bool hasDestination = overlay
+                ? plugin.SelectedTemplateIndex >= 0 && plugin.SelectedTemplateIndex < plugin.SavedTemplates.Count
+                : plugin.SelectedProfileIndex  >= 0 && plugin.SelectedProfileIndex  < plugin.SavedProfiles.Count;
             bool idle       = !plugin.IsMorphing && !plugin.IsPaused && plugin.BoneAnimCount == 0;
-            bool canBind    = profileSel && idle && !plugin.IsInGPose;
+            bool canBind    = hasDestination && idle && !plugin.IsInGPose;
 
             using (ImRaii.Disabled(!canBind))
             {
@@ -700,10 +852,10 @@ public sealed class PlayerTabView
                     plugin.StartGaugeMorph(config.LastGaugeResource, config.LastGaugeInvert);
             }
 
-            if (!profileSel)
+            if (!hasDestination)
             {
                 ImGui.SameLine();
-                ImGui.TextDisabled("Select a destination profile first.");
+                ImGui.TextDisabled(overlay ? "Select an overlay template first." : "Select a destination profile first.");
             }
             else if (plugin.IsInGPose)
             {
@@ -730,7 +882,10 @@ public sealed class PlayerTabView
         ImGui.PopTextWrapPos();
     }
 
-    /// <summary>Playback footer for the player sequence: status line, progress bar, and Pause/Resume/Stop.</summary>
+    /// <summary>
+    /// Playback footer for the player sequence: status line, progress bar, Pause/Resume, and the
+    /// Reset row (always on its own line below, same layout as the Single tab's controls).
+    /// </summary>
     private void DrawSequenceFooter(float bw, float scale, string completeText)
     {
         ImGui.Spacing();
@@ -761,8 +916,16 @@ public sealed class PlayerTabView
                 plugin.ResumeGrowth();
         }
 
-        if (running || paused) ImGui.SameLine();
-        if (ImGui.Button("Stop##Seq", new Vector2(bw, 0)))
-            plugin.ResetGrowth();
+        // ── Reset row: always on its own line below Pause/Resume ───────────────
+        if (ImGui.Button("Reset to Origin##Seq", new Vector2(bw * 1.4f, 0)))
+            plugin.ResetGrowth(toActiveProfile: false);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores the Origin Profile (pinned, or whatever was active when the sequence began). Also stops the sequence.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Reset to Active##Seq", new Vector2(bw * 1.4f, 0)))
+            plugin.ResetGrowth(toActiveProfile: true);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Restores whatever Customize+ profile is really active on your character right now. Also stops the sequence.");
     }
 }

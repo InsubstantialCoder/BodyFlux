@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -36,16 +37,25 @@ public sealed class NetworkSync : IDisposable
     /// </param>
     public readonly record struct PeerFrame(string SenderId, string ProfileJson, string? TargetId);
 
+    // ── Inbound consent message ───────────────────────────────────────────────
+    /// <param name="SenderId">Opaque peer id of the sender.</param>
+    /// <param name="IsRequest">True = morph_request; false = morph_consent (reply).</param>
+    /// <param name="Accepted">For consent replies only: whether the target accepted.</param>
+    public readonly record struct ConsentMsg(string SenderId, bool IsRequest, bool Accepted);
+
     // ── State ─────────────────────────────────────────────────────────────────
     private volatile string _status = "Connecting…";
     private volatile bool   _connected;
+    private volatile bool   _quotaExceeded;
 
-    public string Status      => _status;
-    public bool   IsConnected => _connected;
+    public string Status        => _status;
+    public bool   IsConnected   => _connected;
+    public bool   QuotaExceeded => _quotaExceeded;
 
     // ── Queues ────────────────────────────────────────────────────────────────
-    private readonly ConcurrentQueue<PeerFrame> _inbound  = new();
-    private readonly ConcurrentQueue<string>    _outbound = new();
+    private readonly ConcurrentQueue<PeerFrame>  _inbound        = new();
+    private readonly ConcurrentQueue<string>     _outbound       = new();
+    private readonly ConcurrentQueue<ConsentMsg> _inboundConsent = new();
 
     // ── Peer presence ─────────────────────────────────────────────────────────
     private readonly ConcurrentDictionary<string, DateTime> _peers = new();
@@ -84,6 +94,11 @@ public sealed class NetworkSync : IDisposable
         return ok;
     }
 
+    // ── Room config (received from server on connect) ─────────────────────────
+    /// <summary>Maximum peers allowed in this room, as reported by the server. Null until the
+    /// welcome message arrives.</summary>
+    public int? MaxPeers { get; private set; }
+
     // ── Local consent ─────────────────────────────────────────────────────────
     /// <summary>
     /// Whether this player allows others to morph their character.
@@ -103,6 +118,7 @@ public sealed class NetworkSync : IDisposable
     private readonly string     _localId;
     private readonly string     _groupCode;
     private readonly string     _relayBase;
+    private readonly string     _installIdParam; // "N" format (no hyphens), appended as ?iid=
     private readonly IPluginLog _log;
 
     /// <summary>This client's own opaque peer id (salted hash of the local name). Never a real name.</summary>
@@ -112,15 +128,16 @@ public sealed class NetworkSync : IDisposable
     private readonly Task _runTask;
 
     // ── Constructor ───────────────────────────────────────────────────────────
-    public NetworkSync(string localName, string groupCode, string relayUrl, IPluginLog log)
+    public NetworkSync(string localName, string groupCode, string relayUrl, Guid installId, IPluginLog log)
     {
-        _groupCode = groupCode.Trim();
-        _relayBase = relayUrl.TrimEnd('/');
-        _log       = log;
+        _groupCode      = groupCode.Trim();
+        _relayBase      = relayUrl.TrimEnd('/');
+        _installIdParam = installId.ToString("N"); // 32 hex chars, no hyphens
+        _log            = log;
 
         // The real character name never leaves this process: it is hashed (salted with the Sync
         // Key) into an opaque id, and only the id is ever put on the wire.
-        _localId   = PeerIdentity.Of(localName, _groupCode);
+        _localId = PeerIdentity.Of(localName, _groupCode);
 
         _runTask = Task.Run(RunLoopAsync);
     }
@@ -140,7 +157,7 @@ public sealed class NetworkSync : IDisposable
             try
             {
                 _status = "Connecting…";
-                var uri = new Uri($"{_relayBase}/ws/{Uri.EscapeDataString(_groupCode)}");
+                var uri = new Uri($"{_relayBase}/ws/{Uri.EscapeDataString(_groupCode)}?iid={_installIdParam}");
                 await ws.ConnectAsync(uri, _cts.Token).ConfigureAwait(false);
 
                 _connected = true;
@@ -163,6 +180,12 @@ public sealed class NetworkSync : IDisposable
             {
                 _status = "Disconnected — retrying…";
                 _log.Warning($"[BodyFlux/Net] {ex.GetType().Name}: {ex.Message}");
+            }
+
+            if (_quotaExceeded)
+            {
+                _status = "Daily quota exceeded — try again tomorrow";
+                break;
             }
 
             if (!_cts.IsCancellationRequested)
@@ -203,7 +226,12 @@ public sealed class NetworkSync : IDisposable
             do
             {
                 result = await ws.ReceiveAsync(buf, ct).ConfigureAwait(false);
-                if (result.MessageType == WebSocketMessageType.Close) return;
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    if (ws.CloseStatusDescription?.Contains("quota", StringComparison.OrdinalIgnoreCase) == true)
+                        _quotaExceeded = true;
+                    return;
+                }
                 ms.Write(buf, 0, result.Count);
             } while (!result.EndOfMessage);
 
@@ -218,6 +246,65 @@ public sealed class NetworkSync : IDisposable
                 var consent = msg["consent"]?.Value<bool?>();
                 var baseP   = msg["base"]?.   Value<string>();
 
+                // Server-originated messages (no "sender") — handle before the sender check.
+                if (type == "welcome")
+                {
+                    MaxPeers = msg["maxPeers"]?.Value<int?>();
+                    continue;
+                }
+
+                // Batch messages are sent by the server and carry no "sender" field — handle them
+                // before the sender check so they are not silently discarded.
+                if (type == "batch" && msg["peers"] is JObject batchPeers)
+                {
+                    var activePids = new HashSet<string>();
+
+                    foreach (var prop in batchPeers.Properties())
+                    {
+                        var pid  = prop.Name;
+                        if (pid == _localId) continue;
+                        if (prop.Value is not JObject pData) continue;
+
+                        activePids.Add(pid);
+
+                        var pProfile  = pData["profile"]?.Value<string>();
+                        var pConsent  = pData["consent"]?.Value<bool?>();
+                        var pBase     = pData["base"]?.   Value<string>();
+                        var pStop     = pData["stop"]?.   Value<bool?>() ?? false;
+
+                        if (pData["enc"]?.Value<string>() == "d")
+                        {
+                            if (!string.IsNullOrEmpty(pProfile)) pProfile = ProfileWire.Unpack(pProfile);
+                            if (!string.IsNullOrEmpty(pBase))    pBase    = ProfileWire.Unpack(pBase);
+                        }
+
+                        bool isNew = !_peers.ContainsKey(pid);
+                        _peers[pid] = DateTime.UtcNow;
+                        if (pConsent.HasValue)            _peerConsent[pid]     = pConsent.Value;
+                        if (!string.IsNullOrEmpty(pBase)) _peerBaseProfile[pid] = pBase;
+
+                        if (isNew) _outbound.Enqueue(BuildMessage("hello", null, includeBase: true));
+
+                        if (pStop)
+                            _inbound.Enqueue(new PeerFrame(pid, string.Empty, null));
+                        else if (!string.IsNullOrEmpty(pProfile))
+                            _inbound.Enqueue(new PeerFrame(pid, pProfile, null));
+                    }
+
+                    // Peers absent from this batch have disconnected — remove them immediately.
+                    foreach (var knownPid in _peers.Keys.ToList())
+                    {
+                        if (activePids.Contains(knownPid)) continue;
+                        _peers.TryRemove(knownPid, out _);
+                        _peerConsent.TryRemove(knownPid, out _);
+                        _peerBaseProfile.TryRemove(knownPid, out _);
+                        _inbound.Enqueue(new PeerFrame(knownPid, string.Empty, null));
+                    }
+
+                    continue;
+                }
+
+                // All other message types are sent directly by a peer and must have a sender.
                 if (sender == null || sender == _localId) continue;
 
                 // Unpack DEFLATE+base64 profile payloads back into JSON (see ProfileWire).
@@ -227,7 +314,7 @@ public sealed class NetworkSync : IDisposable
                     if (!string.IsNullOrEmpty(baseP))   baseP   = ProfileWire.Unpack(baseP);
                 }
 
-                // Update peer presence, consent, and base scaling for every message received
+                // Update peer presence, consent, and base scaling for every direct message received.
                 bool isNewPeer = !_peers.ContainsKey(sender);
                 _peers[sender] = DateTime.UtcNow;
                 if (consent.HasValue)
@@ -235,9 +322,8 @@ public sealed class NetworkSync : IDisposable
                 if (!string.IsNullOrEmpty(baseP))
                     _peerBaseProfile[sender] = baseP;
 
-                // First time we hear from this peer — reply with a full hello so they (and we)
-                // discover each other and exchange base scaling immediately, instead of waiting for
-                // the next 30 s heartbeat. Bounded: we only reply on first sighting, never again.
+                // First time we hear from this peer — reply with a full hello so they discover us
+                // immediately instead of waiting for the next heartbeat.
                 if (isNewPeer)
                     _outbound.Enqueue(BuildMessage("hello", null, includeBase: true));
 
@@ -245,6 +331,10 @@ public sealed class NetworkSync : IDisposable
                     _inbound.Enqueue(new PeerFrame(sender, profile, target));
                 else if (type == "stop")
                     _inbound.Enqueue(new PeerFrame(sender, string.Empty, target));
+                else if (type == "morph_request" && target == _localId)
+                    _inboundConsent.Enqueue(new ConsentMsg(sender, IsRequest: true,  Accepted: false));
+                else if (type == "morph_consent" && target == _localId)
+                    _inboundConsent.Enqueue(new ConsentMsg(sender, IsRequest: false, Accepted: msg["accepted"]?.Value<bool?>() ?? false));
                 // "hello" — presence/consent already updated above
             }
             catch { /* malformed message — skip silently */ }
@@ -301,6 +391,33 @@ public sealed class NetworkSync : IDisposable
 
     /// <summary>Dequeue one incoming peer frame. Call in a loop until it returns false.</summary>
     public bool TryDequeue(out PeerFrame frame) => _inbound.TryDequeue(out frame);
+
+    /// <summary>Dequeue one incoming consent message. Call in a loop until it returns false.</summary>
+    public bool TryDequeueConsent(out ConsentMsg msg) => _inboundConsent.TryDequeue(out msg);
+
+    /// <summary>Sends a morph_request to a target specified by real character name.</summary>
+    public void SendMorphRequest(string targetName)
+    {
+        if (!_connected) return;
+        _outbound.Enqueue(BuildMessage("morph_request", null, targetName));
+    }
+
+    /// <summary>
+    /// Sends a morph_consent reply. <paramref name="targetPeerId"/> is the opaque peer id of the
+    /// requester (already hashed — no second hash applied).
+    /// </summary>
+    public void SendMorphConsent(string targetPeerId, bool accepted)
+    {
+        if (!_connected) return;
+        var obj = new JObject
+        {
+            ["sender"]   = _localId,
+            ["type"]     = "morph_consent",
+            ["target"]   = targetPeerId,
+            ["accepted"] = accepted
+        };
+        _outbound.Enqueue(obj.ToString(Formatting.None));
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
