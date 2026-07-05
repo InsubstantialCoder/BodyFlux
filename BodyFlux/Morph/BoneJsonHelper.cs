@@ -64,6 +64,41 @@ internal static class BoneJsonHelper
         bones[boneName] is JObject b && b["PropagateScale"]?.Value<bool>() == true;
 
     /// <summary>
+    /// True when the bone's entry in <paramref name="bones"/> has Customize+ "chain" (propagate)
+    /// enabled for translation. Read per endpoint, like <see cref="IsBoneLinked"/>.
+    /// </summary>
+    public static bool IsPropagateTranslation(JObject bones, string boneName) =>
+        bones[boneName] is JObject b && b["PropagateTranslation"]?.Value<bool>() == true;
+
+    /// <summary>
+    /// True when the bone's entry in <paramref name="bones"/> has Customize+ "chain" (propagate)
+    /// enabled for rotation. Read per endpoint, like <see cref="IsBoneLinked"/>.
+    /// </summary>
+    public static bool IsPropagateRotation(JObject bones, string boneName) =>
+        bones[boneName] is JObject b && b["PropagateRotation"]?.Value<bool>() == true;
+
+    /// <summary>
+    /// Force the translation/rotation propagation ("chain") flags true on an existing working bone so
+    /// they reach Customize+.
+    ///
+    /// Confirmed by dumping the exact JSON BodyFlux sends versus the Customize+ IPC Test tab's working
+    /// profile: C+ DOES propagate translation/rotation to child bones through
+    /// SetTemporaryProfileOnCharacter (its own IPC round-trip applies a chained Head correctly). The
+    /// only difference was that BodyFlux emitted <c>PropagateRotation:false</c> — the flag is lost
+    /// through the GetProfile → clone → SetBoneTransform working document, exactly like PropagateScale
+    /// (see <see cref="SetLinkedChildScaling"/>, which re-asserts it). Unlike scale, T/R needs no
+    /// child magnitude: C+ derives the delta from the bone's own transform each frame, so re-asserting
+    /// the flag on a bone that carries a non-zero Translation/Rotation is sufficient. Only ever sets
+    /// true, never clears, so a bone that does not chain is left untouched.
+    /// </summary>
+    public static void SetPropagateFlags(JObject bones, string boneName, bool translation, bool rotation)
+    {
+        if (bones[boneName] is not JObject bone) return;
+        if (translation) bone["PropagateTranslation"] = true;
+        if (rotation)    bone["PropagateRotation"]    = true;
+    }
+
+    /// <summary>
     /// Builds a virtual destination "Bones" node for <see cref="MorphTargetMode.TemplateOverlay"/>: a
     /// deep clone of <paramref name="originBones"/> with every bone present in
     /// <paramref name="overlayBones"/> replaced by that bone's entry. Bones absent from the overlay

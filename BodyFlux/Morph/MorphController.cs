@@ -31,7 +31,11 @@ public sealed class MorphController
         // The extra child-scale factor to propagate at each endpoint: the parent's own scale when
         // linked there, else identity. Ramped between the two so propagated children (fingers/toes)
         // hold the origin's size at t=0 instead of snapping to their un-propagated vanilla size.
-        Vector3 StartChildScale,  Vector3 EndChildScale);
+        Vector3 StartChildScale,  Vector3 EndChildScale,
+        // "Chain" (propagate translation/rotation) at EITHER endpoint. Re-asserted onto the working
+        // bone because the flag is otherwise lost through the profile round-trip (confirmed by JSON
+        // dump: BodyFlux was emitting PropagateRotation:false). See BoneJsonHelper.SetPropagateFlags.
+        bool    PropagateTranslation, bool PropagateRotation);
 
     // ── State ─────────────────────────────────────────────────────────────────
 
@@ -138,6 +142,14 @@ public sealed class MorphController
             bool originLinked = BoneJsonHelper.IsBoneLinked(originBones, bone);
             bool destLinked   = BoneJsonHelper.IsBoneLinked(destBones,   bone);
 
+            // "Chain" translation/rotation, read per endpoint. Kept on for the whole morph if either
+            // end chains, so children track the parent as its move/rotation ramps in. C+ derives the
+            // child delta from the bone's own transform, so an all-identity end simply won't propagate.
+            bool propT = BoneJsonHelper.IsPropagateTranslation(originBones, bone)
+                      || BoneJsonHelper.IsPropagateTranslation(destBones, bone);
+            bool propR = BoneJsonHelper.IsPropagateRotation(originBones, bone)
+                      || BoneJsonHelper.IsPropagateRotation(destBones, bone);
+
             _boneAnims[bone] = new BoneAnim(
                 StartTranslation: startT, EndTranslation: destT,
                 StartRotation:    startR, EndRotation:    destR,
@@ -147,14 +159,27 @@ public sealed class MorphController
                 // the parent's scale to its children), else identity so an end whose children carry
                 // their own explicit scale is not doubled up. See SetLinkedChildScaling.
                 StartChildScale:  originLinked ? startS : Vector3.One,
-                EndChildScale:    destLinked   ? destS  : Vector3.One);
+                EndChildScale:    destLinked   ? destS  : Vector3.One,
+                PropagateTranslation: propT, PropagateRotation: propR);
         }
 
         // Initialise the working document: ensure all animated bones exist at their
         // start values before the first tick so C+ sees a valid document immediately.
+        //
+        // IMPORTANT: when profileBase already carries a "Bones" node, we must reuse that exact
+        // object — never re-assign it to itself. Newtonsoft clones a JToken that is assigned to a
+        // property it already belongs to, so `_workingProfile["Bones"] = _workingProfile["Bones"]`
+        // would leave the local reference pointing at an orphaned copy while the document keeps a
+        // now-empty clone. Every seed below (CloneBoneTemplate, SetLinkedChildScaling,
+        // SetPropagateFlags) would then write to the orphan and never reach C+, so the morph would
+        // fall back to Tick creating bare bones each frame — dropping all propagation flags. Only
+        // create-and-attach a fresh node when one is genuinely absent.
         _workingProfile = profileBase;
-        var workBones   = _workingProfile["Bones"] as JObject ?? new JObject();
-        _workingProfile["Bones"] = workBones;
+        if (_workingProfile["Bones"] is not JObject workBones)
+        {
+            workBones = new JObject();
+            _workingProfile["Bones"] = workBones;
+        }
 
         foreach (var (bone, anim) in _boneAnims)
         {
@@ -182,6 +207,14 @@ public sealed class MorphController
             // children to vanilla. It then ramps toward the destination factor in Tick.
             if (anim.AnyLinked)
                 BoneJsonHelper.SetLinkedChildScaling(workBones, bone, anim.StartChildScale);
+
+            // Re-assert the translation/rotation "chain" flags so children (eyes, hair, cheeks …)
+            // follow the parent's move/rotation. The flag is lost through the working-document build
+            // (dump confirmed PropagateRotation:false was reaching C+). Constant for the whole morph,
+            // so set once here — Tick's WriteChannel path leaves the flags intact.
+            if (anim.PropagateTranslation || anim.PropagateRotation)
+                BoneJsonHelper.SetPropagateFlags(workBones, bone,
+                    anim.PropagateTranslation, anim.PropagateRotation);
         }
 
         // Seed the externalised root scale at its start value so the very first tick is correct.
