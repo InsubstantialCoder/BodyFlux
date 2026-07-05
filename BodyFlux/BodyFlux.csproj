@@ -9,6 +9,9 @@
   <ItemGroup>
     <Content Include="images\icon.png" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="BodyFlux.Tests" />
+  </ItemGroup>
 
   <!-- DalamudPackager emits latest.zip only when it actually packages (Release); rename it to the
        plugin name for the GitHub release asset. Guarded by Exists so Debug builds (no zip) don't fail. -->
