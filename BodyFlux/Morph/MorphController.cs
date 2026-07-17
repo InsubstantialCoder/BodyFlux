@@ -25,8 +25,9 @@ public sealed class MorphController
         Vector3 StartTranslation, Vector3 EndTranslation,
         Vector3 StartRotation,    Vector3 EndRotation,
         Vector3 StartScale,       Vector3 EndScale,
-        // True when the bone is a linked ("propagate scale") parent at EITHER endpoint, so its
-        // child magnitude must be driven explicitly (see BoneJsonHelper.SetLinkedChildScaling).
+        // True when the bone drives its children at EITHER endpoint — a linked ("propagate scale")
+        // parent OR an independent-child-scaling bone — so its child magnitude must be driven
+        // explicitly (see BoneJsonHelper.SetLinkedChildScaling).
         bool    AnyLinked,
         // The extra child-scale factor to propagate at each endpoint: the parent's own scale when
         // linked there, else identity. Ramped between the two so propagated children (fingers/toes)
@@ -132,15 +133,32 @@ public sealed class MorphController
             var (startT, startR, startS) = BoneJsonHelper.ReadBoneTransform(originBones, bone);
             var (destT,  destR,  destS)  = BoneJsonHelper.ReadBoneTransform(destBones,   bone);
 
-            // Link ("propagate scale") state is read per-endpoint, NOT with destination precedence:
-            // a bone can be a linked parent in the origin, the destination, or both, and each end
-            // contributes its own child-scale factor. Ramping the propagated child magnitude between
-            // those two ends is what stops fingers/toes from collapsing to their un-propagated
-            // vanilla size at the start of a morph between two linked rigs (the "shrink to vanilla"
-            // artefact). Handles the mixed cases too: linked→unlinked lands the children on their own
-            // explicit destination scale, unlinked→linked reproduces the original dest-only fix.
+            // Child-scale state is read per-endpoint, NOT with destination precedence: a bone can
+            // drive its children in the origin, the destination, or both, and each end contributes
+            // its own child-scale factor. Ramping the propagated child magnitude between those two
+            // ends is what stops fingers/toes from collapsing to their un-propagated vanilla size at
+            // the start of a morph between two linked rigs (the "shrink to vanilla" artefact).
+            //
+            // Two distinct Customize+ modes both drive children, and they must NOT be conflated:
+            //   • Linked (PropagateScale, not independent): children follow the parent's own scale,
+            //     so the child factor at that end is the parent scale (startS/destS).
+            //   • Independent child scaling (ChildScaleIndependent): children carry an explicit
+            //     ChildScaling vector the user chose (e.g. waist 1.02 while the parent is 1.15), so
+            //     that value must be used verbatim — deriving it from the parent scale is the bug
+            //     this handling fixes. Independent takes priority when a bone sets both flags.
+            // Handles the mixed cases too: linked→unlinked lands the children on their own explicit
+            // destination scale, unlinked→linked reproduces the original dest-only fix.
+            bool originIndep  = BoneJsonHelper.IsChildScaleIndependent(originBones, bone);
+            bool destIndep    = BoneJsonHelper.IsChildScaleIndependent(destBones,   bone);
             bool originLinked = BoneJsonHelper.IsBoneLinked(originBones, bone);
             bool destLinked   = BoneJsonHelper.IsBoneLinked(destBones,   bone);
+
+            Vector3 startChildScale = originIndep  ? BoneJsonHelper.ReadChildScaling(originBones, bone)
+                                    : originLinked ? startS
+                                    : Vector3.One;
+            Vector3 endChildScale   = destIndep    ? BoneJsonHelper.ReadChildScaling(destBones, bone)
+                                    : destLinked   ? destS
+                                    : Vector3.One;
 
             // "Chain" translation/rotation, read per endpoint. Kept on for the whole morph if either
             // end chains, so children track the parent as its move/rotation ramps in. C+ derives the
@@ -154,12 +172,13 @@ public sealed class MorphController
                 StartTranslation: startT, EndTranslation: destT,
                 StartRotation:    startR, EndRotation:    destR,
                 StartScale:       startS, EndScale:       destS,
-                AnyLinked:        originLinked || destLinked,
-                // Child factor at each end = that end's own parent scale when linked (C+ propagates
-                // the parent's scale to its children), else identity so an end whose children carry
-                // their own explicit scale is not doubled up. See SetLinkedChildScaling.
-                StartChildScale:  originLinked ? startS : Vector3.One,
-                EndChildScale:    destLinked   ? destS  : Vector3.One,
+                AnyLinked:        originIndep || destIndep || originLinked || destLinked,
+                // Child factor at each end: the bone's explicit ChildScaling when it uses independent
+                // child scaling; else the parent's own scale when linked (C+ propagates the parent's
+                // scale to its children); else identity so an end whose children carry their own
+                // explicit scale is not doubled up. See SetLinkedChildScaling.
+                StartChildScale:  startChildScale,
+                EndChildScale:    endChildScale,
                 PropagateTranslation: propT, PropagateRotation: propR);
         }
 
