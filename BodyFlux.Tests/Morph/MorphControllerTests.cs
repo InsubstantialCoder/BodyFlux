@@ -167,6 +167,36 @@ public class MorphControllerTests
     }
 
     [Fact]
+    public void Start_IndependentChildScaling_PreservesExplicitChildScale_NotParentScale()
+    {
+        // Reported bug: a waist bone with independent child scaling (parent 1.15/1.25/1.15, children
+        // an explicit 1.02/1.04/1.02) was morphed as if linked — the children were scaled to the
+        // parent's 1.15 instead of the intended 1.02. The morph must keep the explicit ChildScaling.
+        var controller = new MorphController();
+
+        var waist = Bone(Vector3.Zero, Vector3.Zero, new Vector3(1.15f, 1.25f, 1.15f));
+        waist["PropagateScale"]        = true;                 // independent bones still propagate
+        waist["ChildScaleIndependent"] = true;
+        waist["ChildScaling"]          = new JObject { ["X"] = 1.02f, ["Y"] = 1.04f, ["Z"] = 1.02f };
+
+        var origin      = new JObject { ["j_sebo_c"] = waist };
+        var dest        = new JObject { ["j_sebo_c"] = (JObject)waist.DeepClone() }; // static: no change
+        var profileBase = new JObject { ["Bones"] = new JObject() };
+
+        controller.Start(0, profileBase, origin, dest);
+
+        // At the origin (progress 0) the child scale must be the user's 1.02/1.04/1.02, never 1.15.
+        var json = controller.Tick(0.001f, 1f);
+        var bone = JObject.Parse(json!)["Bones"]!["j_sebo_c"]!;
+
+        Assert.True(bone["ChildScaleIndependent"]!.Value<bool>());
+        Assert.True(bone["PropagateScale"]!.Value<bool>()); // gate kept open so C+ applies it
+        Assert.Equal(1.02f, bone["ChildScaling"]!["X"]!.Value<float>(), precision: 4);
+        Assert.Equal(1.04f, bone["ChildScaling"]!["Y"]!.Value<float>(), precision: 4);
+        Assert.Equal(1.02f, bone["ChildScaling"]!["Z"]!.Value<float>(), precision: 4);
+    }
+
+    [Fact]
     public void Start_RemovesIdentityOnlyChannels_ToAvoidOverridingExternalPositioning()
     {
         // Both origin and dest have zero Translation/Rotation but differing Scale — the

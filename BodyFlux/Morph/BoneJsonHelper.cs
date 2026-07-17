@@ -54,14 +54,45 @@ internal static class BoneJsonHelper
     }
 
     /// <summary>
-    /// True when the bone's entry in <paramref name="bones"/> is a Customize+ "linked" scale parent
-    /// (PropagateScale set), i.e. its scale is meant to propagate to child bones. Evaluated per
-    /// endpoint (no origin/destination precedence): a morph must know the link state of BOTH ends
-    /// independently so it can ramp the child magnitude from the origin's propagated scale to the
-    /// destination's — see <see cref="SetLinkedChildScaling"/> and MorphController's BoneAnim.
+    /// True when the bone's entry in <paramref name="bones"/> is a Customize+ *linked* scale parent:
+    /// its scale propagates to child bones (PropagateScale set) AND it is NOT in independent-child-
+    /// scaling mode — i.e. the children simply follow the parent's own scale. Independent bones are
+    /// deliberately excluded (they also set PropagateScale) because their child magnitude is an
+    /// explicit value the user chose, not the parent's scale; conflating the two made a morph
+    /// overwrite an independent 1.02 child scale with the parent's 1.15. See
+    /// <see cref="IsChildScaleIndependent"/>, <see cref="ReadChildScaling"/>.
+    ///
+    /// Evaluated per endpoint (no origin/destination precedence): a morph must know the link state of
+    /// BOTH ends independently so it can ramp the child magnitude from the origin's propagated scale
+    /// to the destination's — see <see cref="SetLinkedChildScaling"/> and MorphController's BoneAnim.
     /// </summary>
     public static bool IsBoneLinked(JObject bones, string boneName) =>
-        bones[boneName] is JObject b && b["PropagateScale"]?.Value<bool>() == true;
+        bones[boneName] is JObject b
+        && b["PropagateScale"]?.Value<bool>() == true
+        && !IsChildScaleIndependent(bones, boneName);
+
+    /// <summary>
+    /// True when the bone uses Customize+ *independent* child scaling — the child bones carry their
+    /// own explicit <see cref="ReadChildScaling"/> vector instead of following the parent's scale.
+    ///
+    /// Reads BOTH spellings of the flag because the source can arrive under either: Customize+'s IPC
+    /// schema (IPCBoneTransform, e.g. GetTemplate) names it <c>ChildScaleIndependent</c>, while its
+    /// on-disk profile format (as GetByUniqueId may serialise it) names it <c>ChildScalingIndependent</c>.
+    /// A morph must detect independence regardless of which one the origin/destination JSON carries;
+    /// missing it makes Customize+ fall back to linked mode and scale the children to the parent's size.
+    /// </summary>
+    public static bool IsChildScaleIndependent(JObject bones, string boneName) =>
+        bones[boneName] is JObject b
+        && (b["ChildScaleIndependent"]?.Value<bool>() == true
+            || b["ChildScalingIndependent"]?.Value<bool>() == true);
+
+    /// <summary>
+    /// Reads the bone's explicit ChildScaling vector (the independent child-scale magnitude), falling
+    /// back to identity when the bone or the channel is absent. Only meaningful when
+    /// <see cref="IsChildScaleIndependent"/> is true.
+    /// </summary>
+    public static Vector3 ReadChildScaling(JObject bones, string boneName) =>
+        bones[boneName] is JObject b ? ReadVec3(b["ChildScaling"] as JObject, 1f) : Vector3.One;
 
     /// <summary>
     /// True when the bone's entry in <paramref name="bones"/> has Customize+ "chain" (propagate)
