@@ -552,7 +552,7 @@ public sealed class PlayerTabView
                     toApply = entry;
             }
             ImGui.SameLine();
-            ImGui.TextUnformatted(entry.ProfileName);
+            ImGui.TextUnformatted($"{UiHelpers.PresetOriginLabel(entry)} → {entry.ProfileName}");
             ImGui.SameLine();
             ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing)}  {UiHelpers.TargetModeShort(entry.TargetMode)})");
         }
@@ -614,7 +614,7 @@ public sealed class PlayerTabView
 
             if (hasPreset)
             {
-                ImGui.TextUnformatted(preset!.ProfileName);
+                ImGui.TextUnformatted($"{UiHelpers.PresetOriginLabel(preset!)} → {preset!.ProfileName}");
                 ImGui.SameLine();
                 ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing)}  {UiHelpers.TargetModeShort(preset.TargetMode)})");
             }

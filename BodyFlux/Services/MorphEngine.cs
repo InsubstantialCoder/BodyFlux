@@ -212,9 +212,13 @@ public sealed class MorphEngine
     /// let callers (presets, history) supply per-morph values without touching saved config.
     /// </summary>
     public void StartGrowth(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
-                            MorphTargetMode? targetModeOverride = null)
+                            MorphTargetMode? targetModeOverride = null, Guid? originOverride = null)
     {
-        if (_player.Controller.IsMorphing) return;
+        if (_player.Controller.IsMorphing)
+        {
+            _chat.PrintError("[BodyFlux] A morph is already in progress — wait for it to finish or press Reset.");
+            return;
+        }
         _player.SpeedOverride = speedOverride;
 
         var resolvedTargetMode = targetModeOverride ?? _config.MorphTargetMode;
@@ -273,7 +277,7 @@ public sealed class MorphEngine
         }
         else
         {
-            originJson = ResolvePlayerOriginJson();
+            originJson = ResolvePlayerOriginJson(originOverride);
             if (originJson == null)
             {
                 _log.Error("[BodyFlux] No active C+ profile on the local player. " +
@@ -338,10 +342,16 @@ public sealed class MorphEngine
 
         _sync.ResetSendThrottle();
 
-        // Record in history (dedup by destination, newest first, cap at 5)
+        // Record in history (dedup by destination, newest first, cap at 5). Carries the origin that
+        // was actually used (preset override, else the pin) so re-applying from history reproduces
+        // the same morph instead of picking up whatever origin happens to be pinned later — see
+        // MorphPreset.OriginProfileId.
+        Guid? usedOriginId = string.IsNullOrEmpty(TargetPlayerName) ? (originOverride ?? _config.OriginProfileId) : null;
         var historyEntry = new MorphPreset(destId, destName,
             speedOverride ?? _config.GrowthSpeed, resolvedMode, resolvedEasing,
-            TargetMode: resolvedTargetMode, TemplateOwnerProfileId: templateOwnerProfileId);
+            TargetMode: resolvedTargetMode, TemplateOwnerProfileId: templateOwnerProfileId,
+            OriginProfileId: usedOriginId,
+            OriginProfileName: usedOriginId is { } uid ? ResolveProfileName(uid) : null);
         _config.RecentMorphs.RemoveAll(h => h.ProfileId == destId);
         _config.RecentMorphs.Insert(0, historyEntry);
         if (_config.RecentMorphs.Count > 5)
@@ -780,7 +790,7 @@ public sealed class MorphEngine
             }
             SelectedProfileIndex = idx;
         }
-        StartGrowth(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode);
+        StartGrowth(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.OriginProfileId);
     }
 
     /// <summary>
@@ -864,9 +874,14 @@ public sealed class MorphEngine
 
         while (_config.Presets.Count <= slot)
             _config.Presets.Add(null);
+        // Captures the Origin Profile pin as it stands right now, so Apply later reproduces this
+        // exact origin→destination pair instead of picking up whatever the pin has drifted to since
+        // (the pin is one shared, global value — see MorphPreset.OriginProfileId).
         _config.Presets[slot] = new MorphPreset(id, name,
             _config.GrowthSpeed, _config.MorphMode, _config.EasingMode,
-            TargetMode: _config.MorphTargetMode, TemplateOwnerProfileId: templateOwnerProfileId);
+            TargetMode: _config.MorphTargetMode, TemplateOwnerProfileId: templateOwnerProfileId,
+            OriginProfileId: _config.OriginProfileId,
+            OriginProfileName: _config.OriginProfileId is { } originId ? ResolveProfileName(originId) : null);
         _config.Save();
     }
 
@@ -1054,14 +1069,34 @@ public sealed class MorphEngine
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Resolves the local player's morph origin: a pinned Origin Profile always wins, then the
-    /// live-active C+ profile, then a temp profile already applied by another plugin. Shared by
-    /// <see cref="StartGrowth"/> and the instant-apply path in <see cref="ResetGrowth"/> so both
-    /// agree on what "Origin" currently means.
-    /// </summary>
-    private string? ResolvePlayerOriginJson()
+    /// <summary>Looks up a Customize+ profile's display name by ID, for snapshotting into a preset's
+    /// <see cref="MorphPreset.OriginProfileName"/>. Returns <c>null</c> if not found.</summary>
+    private string? ResolveProfileName(Guid id)
     {
+        var profiles = _ipc.Profiles;
+        for (int i = 0; i < profiles.Count; i++)
+            if (profiles[i].Id == id) return profiles[i].Name;
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves the local player's morph origin: <paramref name="originOverride"/> wins if given
+    /// (a preset's own saved Origin Profile — see <see cref="MorphPreset.OriginProfileId"/>), else
+    /// the globally pinned Origin Profile, then the live-active C+ profile, then a temp profile
+    /// already applied by another plugin. Shared by <see cref="StartGrowth"/> and the instant-apply
+    /// path in <see cref="ResetGrowth"/> so both agree on what "Origin" currently means.
+    /// </summary>
+    private string? ResolvePlayerOriginJson(Guid? originOverride = null)
+    {
+        if (originOverride is { } presetOriginId)
+        {
+            var (ecPreset, presetJson) = _ipc.GetProfile(presetOriginId);
+            if (ecPreset == 0 && presetJson != null)
+                return presetJson;
+            _log.Warning($"[BodyFlux] Preset's saved Origin Profile could not be loaded (ec={ecPreset}); " +
+                         "falling back to the pinned/live origin.");
+        }
+
         if (_config.OriginProfileId is { } pinnedOriginId)
         {
             var (ecPin, pinnedJson) = _ipc.GetProfile(pinnedOriginId);
