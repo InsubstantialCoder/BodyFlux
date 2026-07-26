@@ -73,6 +73,59 @@ public class BoneJsonHelperTests
     }
 
     [Fact]
+    public void IsBoneLinked_FalseForIndependentChildScaling()
+    {
+        // A bone using independent child scaling also sets PropagateScale, but it is NOT "linked":
+        // its children carry their own explicit ChildScaling, not the parent's scale. Treating it as
+        // linked overwrote the user's independent value with the parent scale (the reported bug).
+        var bones = new JObject
+        {
+            ["ipc"]     = new JObject { ["PropagateScale"] = true, ["ChildScaleIndependent"]     = true },
+            ["ondisk"]  = new JObject { ["PropagateScale"] = true, ["ChildScalingIndependent"]   = true },
+        };
+
+        Assert.False(BoneJsonHelper.IsBoneLinked(bones, "ipc"));
+        Assert.False(BoneJsonHelper.IsBoneLinked(bones, "ondisk"));
+        Assert.True(BoneJsonHelper.IsChildScaleIndependent(bones, "ipc"));
+        Assert.True(BoneJsonHelper.IsChildScaleIndependent(bones, "ondisk"));
+    }
+
+    [Fact]
+    public void IsChildScaleIndependent_ReadsBothSpellings()
+    {
+        var bones = new JObject
+        {
+            ["ipc"]    = new JObject { ["ChildScaleIndependent"]   = true },  // IPC schema spelling
+            ["ondisk"] = new JObject { ["ChildScalingIndependent"] = true },  // C+ on-disk spelling
+            ["off"]    = new JObject { ["ChildScaleIndependent"]   = false },
+            ["none"]   = new JObject(),
+        };
+
+        Assert.True(BoneJsonHelper.IsChildScaleIndependent(bones, "ipc"));
+        Assert.True(BoneJsonHelper.IsChildScaleIndependent(bones, "ondisk"));
+        Assert.False(BoneJsonHelper.IsChildScaleIndependent(bones, "off"));
+        Assert.False(BoneJsonHelper.IsChildScaleIndependent(bones, "none"));
+        Assert.False(BoneJsonHelper.IsChildScaleIndependent(bones, "missing"));
+    }
+
+    [Fact]
+    public void ReadChildScaling_ReturnsExplicitVector_OrIdentityWhenAbsent()
+    {
+        var bones = new JObject
+        {
+            ["waist"] = new JObject
+            {
+                ["ChildScaling"] = new JObject { ["X"] = 1.02f, ["Y"] = 1.04f, ["Z"] = 1.02f },
+            },
+            ["bare"] = new JObject(),
+        };
+
+        Assert.Equal(new Vector3(1.02f, 1.04f, 1.02f), BoneJsonHelper.ReadChildScaling(bones, "waist"));
+        Assert.Equal(Vector3.One, BoneJsonHelper.ReadChildScaling(bones, "bare"));
+        Assert.Equal(Vector3.One, BoneJsonHelper.ReadChildScaling(bones, "missing"));
+    }
+
+    [Fact]
     public void SetLinkedChildScaling_SetsPropagateScaleAndIndependentFlag()
     {
         var bones = new JObject { ["j_asi_a"] = new JObject() };

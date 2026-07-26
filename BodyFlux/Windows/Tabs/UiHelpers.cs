@@ -36,6 +36,14 @@ internal static class UiHelpers
     };
 
     /// <summary>
+    /// Origin half of a preset/history row's "From → To" label. A preset with no pinned origin
+    /// (<see cref="MorphPreset.OriginProfileId"/> null) started from whatever was live on the
+    /// character at Apply time, so that's shown instead of a profile name.
+    /// </summary>
+    public static string PresetOriginLabel(MorphPreset preset) =>
+        preset.OriginProfileId is null ? "live profile" : preset.OriginProfileName ?? "(deleted profile)";
+
+    /// <summary>
     /// Filterable, searchable combo box over a flat list of names — shared by every destination
     /// picker (Player/Brio Single, Group rows, Sequence add-step), which each switch between
     /// listing Profiles or Templates depending on the current <see cref="MorphTargetMode"/>.

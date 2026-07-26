@@ -29,7 +29,7 @@ public sealed class ChatCommands : IDisposable
                 "Open the Body Flux window. Subcommands:\n" +
                 $"  /bodyflux preset <1-{Configuration.PresetSlots}> [speed]    — Apply a preset slot.\n" +
                 "  /bodyflux sequence <name> [speed]  — Play a sequence by name.\n" +
-                "  /bodyflux pause / resume / reverse / reset  — Control the active morph."
+                "  /bodyflux pause / resume / reverse / reset [origin|active]  — Control the active morph."
         });
     }
 
@@ -54,7 +54,7 @@ public sealed class ChatCommands : IDisposable
             case "pause":    HandlePause();         break;
             case "resume":   HandleResume();        break;
             case "reverse":  HandleReverse();       break;
-            case "reset":    HandleReset();         break;
+            case "reset":    HandleReset(parts);    break;
             default:         ShowUsage();           break;
         }
     }
@@ -190,15 +190,33 @@ public sealed class ChatCommands : IDisposable
         _chat.Print("[BodyFlux] Morph reversed.");
     }
 
-    private void HandleReset()
+    private void HandleReset(string[] parts)
     {
         if (_plugin.BoneAnimCount == 0)
         {
             _chat.PrintError("[BodyFlux] No active morph to reset.");
             return;
         }
-        _plugin.ResetGrowth();
-        _chat.Print("[BodyFlux] Morph reset.");
+
+        bool toActiveProfile;
+        switch (parts.Length >= 2 ? parts[1].ToLowerInvariant() : "")
+        {
+            case "":
+            case "origin":
+                toActiveProfile = false;
+                break;
+            case "active":
+                toActiveProfile = true;
+                break;
+            default:
+                _chat.PrintError("[BodyFlux] Usage: /bodyflux reset [origin|active]");
+                return;
+        }
+
+        _plugin.ResetGrowth(toActiveProfile);
+        _chat.Print(toActiveProfile
+            ? "[BodyFlux] Morph reset to active profile."
+            : "[BodyFlux] Morph reset to origin.");
     }
 
     // ── fallback ──────────────────────────────────────────────────────────────
@@ -206,5 +224,5 @@ public sealed class ChatCommands : IDisposable
     private void ShowUsage() =>
         _chat.PrintError(
             "[BodyFlux] Unknown command. Available subcommands: " +
-            $"preset <1-{Configuration.PresetSlots}> [speed]  |  sequence <name> [speed]  |  pause  |  resume  |  reverse  |  reset");
+            $"preset <1-{Configuration.PresetSlots}> [speed]  |  sequence <name> [speed]  |  pause  |  resume  |  reverse  |  reset [origin|active]");
 }
