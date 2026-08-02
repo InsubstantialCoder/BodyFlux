@@ -360,6 +360,12 @@ public sealed class MorphEngine
             return;
         }
 
+        // ── Parse both ends before touching the session ───────────────────────
+        // Parsing first means a bad profile aborts without leaving a half-configured session
+        // behind, and TryParseProfile keeps the failure from escaping into the ImGui draw loop.
+        if (!TryParseProfile(originJson, "origin",      out var originJObj)) return;
+        if (!TryParseProfile(destJson,   "destination", out var destJObj))   return;
+
         // ── Configure the player session ──────────────────────────────────────
         _player.OriginProfileJson = originJson;
         _player.NetworkTargetName = targetIndex == 0 ? null : TargetPlayerName;
@@ -367,8 +373,6 @@ public sealed class MorphEngine
         _player.SeqSteps          = null;
         _player.SeqRunning        = false;
 
-        var originJObj  = originJson != null ? JObject.Parse(originJson) : new JObject();
-        var destJObj    = JObject.Parse(destJson);
         var originBones = originJObj["Bones"] as JObject ?? new JObject();
         var destBones   = destJObj  ["Bones"] as JObject ?? new JObject();
 
@@ -390,6 +394,11 @@ public sealed class MorphEngine
 
         _sync.ResetSendThrottle();
 
+        // The target's consent covered this morph and no more: spend it now that the morph is
+        // committed, so applying another one to them prompts them again.
+        if (targetIndex != 0 && !string.IsNullOrEmpty(TargetPlayerName))
+            _sync.ConsumeConsent(TargetPlayerName);
+
         // Record in history (dedup by destination, newest first, cap at 5). Carries the origin that
         // was actually used (preset override, else the pin) so re-applying from history reproduces
         // the same morph instead of picking up whatever origin happens to be pinned later — see
@@ -409,6 +418,30 @@ public sealed class MorphEngine
         string targetLabel = string.IsNullOrEmpty(TargetPlayerName) ? "self" : $"'{TargetPlayerName}'";
         _log.Information($"[BodyFlux] Morphing {_player.Controller.BoneCount} bones on {targetLabel}: " +
                          $"→ '{destName}'");
+    }
+
+    /// <summary>
+    /// Parses a Customize+ profile, reporting and aborting the morph instead of throwing.
+    /// <see cref="StartGrowth"/> is called straight from the ImGui draw loop, so an exception here
+    /// escapes into Dalamud's window host and takes the UI frame down with it — which is exactly
+    /// what a peer's unreadable base scaling used to do.
+    /// A null <paramref name="json"/> is not an error: it means "no origin", i.e. morph from identity.
+    /// </summary>
+    private bool TryParseProfile(string? json, string what, out JObject parsed)
+    {
+        parsed = new JObject();
+        if (json == null) return true;
+        try
+        {
+            parsed = JObject.Parse(json);
+            return true;
+        }
+        catch (Newtonsoft.Json.JsonException ex)
+        {
+            _log.Error($"[BodyFlux] Unreadable {what} profile — morph aborted. {ex.Message}");
+            _chat.PrintError($"[BodyFlux] The {what} profile could not be read — morph aborted.");
+            return false;
+        }
     }
 
     public void PauseGrowth()   => _player.Controller.Pause();

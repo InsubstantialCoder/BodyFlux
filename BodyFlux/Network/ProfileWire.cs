@@ -63,4 +63,32 @@ public static class ProfileWire
         ds.CopyTo(outMs);
         return Encoding.UTF8.GetString(outMs.ToArray());
     }
+
+    /// <summary>
+    /// Turns an inbound wire field into profile JSON, accepting both the packed form and plain
+    /// JSON. Returns false when the field is neither, so the caller can drop it instead of
+    /// caching a payload that blows up later at <c>JObject.Parse</c>.
+    ///
+    /// The form is decided by inspecting the payload rather than by trusting the message's "enc"
+    /// flag: relays up to 0.5.9.0 omitted that flag on a stopped peer's base profile, so a peer
+    /// that had reset its morph kept broadcasting a packed base that receivers stored verbatim.
+    /// </summary>
+    public static bool TryDecode(string? field, out string json)
+    {
+        json = field ?? string.Empty;
+        if (string.IsNullOrEmpty(json)) return false;
+        if (IsJson(json)) return true;
+        try { json = Unpack(json); } catch { return false; }
+        return IsJson(json);
+    }
+
+    private static bool IsJson(string s)
+    {
+        foreach (var c in s)
+        {
+            if (char.IsWhiteSpace(c)) continue;
+            return c == '{';
+        }
+        return false;
+    }
 }

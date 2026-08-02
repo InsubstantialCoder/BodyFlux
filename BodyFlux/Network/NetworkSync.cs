@@ -272,11 +272,10 @@ public sealed class NetworkSync : IDisposable
                         var pBase     = pData["base"]?.   Value<string>();
                         var pStop     = pData["stop"]?.   Value<bool?>() ?? false;
 
-                        if (pData["enc"]?.Value<string>() == "d")
-                        {
-                            if (!string.IsNullOrEmpty(pProfile)) pProfile = ProfileWire.Unpack(pProfile);
-                            if (!string.IsNullOrEmpty(pBase))    pBase    = ProfileWire.Unpack(pBase);
-                        }
+                        // Decode from the payload rather than the "enc" flag, and drop anything
+                        // that isn't JSON afterwards — see ProfileWire.TryDecode.
+                        pProfile = ProfileWire.TryDecode(pProfile, out var pProfileJson) ? pProfileJson : null;
+                        pBase    = ProfileWire.TryDecode(pBase,    out var pBaseJson)    ? pBaseJson    : null;
 
                         bool isNew = !_peers.ContainsKey(pid);
                         _peers[pid] = DateTime.UtcNow;
@@ -308,11 +307,8 @@ public sealed class NetworkSync : IDisposable
                 if (sender == null || sender == _localId) continue;
 
                 // Unpack DEFLATE+base64 profile payloads back into JSON (see ProfileWire).
-                if (msg["enc"]?.Value<string>() == "d")
-                {
-                    if (!string.IsNullOrEmpty(profile)) profile = ProfileWire.Unpack(profile);
-                    if (!string.IsNullOrEmpty(baseP))   baseP   = ProfileWire.Unpack(baseP);
-                }
+                profile = ProfileWire.TryDecode(profile, out var profileJson) ? profileJson : null;
+                baseP   = ProfileWire.TryDecode(baseP,   out var basePJson)   ? basePJson   : null;
 
                 // Update peer presence, consent, and base scaling for every direct message received.
                 bool isNewPeer = !_peers.ContainsKey(sender);

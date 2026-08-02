@@ -59,4 +59,39 @@ public class ProfileWireTests
         // Should not throw — asserts it really is valid base64.
         Convert.FromBase64String(packed);
     }
+
+    [Fact]
+    public void TryDecode_UnpacksPackedField()
+    {
+        const string json = """{"Bones":{"j_kao":{"Scaling":{"X":1.5,"Y":1.5,"Z":1.5}}}}""";
+
+        Assert.True(ProfileWire.TryDecode(ProfileWire.Pack(json), out var decoded));
+        Assert.Equal(json, decoded);
+    }
+
+    [Fact]
+    public void TryDecode_PassesPlainJsonThrough()
+    {
+        const string json = """{"Bones":{}}""";
+
+        Assert.True(ProfileWire.TryDecode(json, out var decoded));
+        Assert.Equal(json, decoded);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not base64 and not json")]
+    public void TryDecode_RejectsUndecodableField(string? field)
+    {
+        Assert.False(ProfileWire.TryDecode(field, out _));
+    }
+
+    [Fact]
+    public void TryDecode_RejectsBase64ThatIsNotAProfile()
+    {
+        // Valid base64, but not DEFLATE'd JSON — must be dropped, not handed on as a profile.
+        var junk = Convert.ToBase64String("hello world"u8.ToArray());
+        Assert.False(ProfileWire.TryDecode(junk, out _));
+    }
 }

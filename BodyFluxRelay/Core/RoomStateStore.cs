@@ -263,8 +263,11 @@ public sealed class RoomStateStore : IAsyncDisposable
             writer.WriteStartObject(peerId);
             writer.WriteBoolean("consent", st.Consent);
 
-            // Write enc once if any packed field is present.
-            bool hasPackedData = !st.IsStopped && (st.Profile != null || st.Base != null);
+            // Write enc once if any packed field is present. The base is emitted regardless of
+            // IsStopped (a stopped peer still has a base to share), so it must be counted here
+            // too — otherwise a stopped peer's base goes out unflagged and receivers cache the
+            // still-packed blob as if it were JSON.
+            bool hasPackedData = st.Base != null || (!st.IsStopped && st.Profile != null);
             if (hasPackedData) writer.WriteString("enc", "d");
 
             if (st.IsStopped)

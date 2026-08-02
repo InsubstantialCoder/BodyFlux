@@ -23,6 +23,7 @@ public sealed class SyncManager : IDisposable
     private const int   PeerStaleSeconds  = 90;     // peers unseen this long are treated as gone
     private const float InactivityTimeout = 60f;    // 1 minute alone + idle → auto-disconnect
     private const float InterpInterval    = 0.05f;  // seconds between server batch ticks; interp window
+    private const int   PromptCooldownSec = 30;     // after a deny, ignore that peer's frames this long
 
     // Per-peer interpolation state: smoothly blends from the last displayed bone snapshot to the
     // latest received one, advancing each game tick instead of jumping at the 20 Hz batch rate.
@@ -56,6 +57,11 @@ public sealed class SyncManager : IDisposable
     // ── Incoming consent requests (receiver side) ──────────────────────────────
     // Each entry is the opaque peer id + display name of the requester.
     private readonly List<(string PeerId, string DisplayName)> _incomingRequests = new();
+    // Peers whose morph we have accepted and who have not stopped it yet. A grant covers exactly
+    // one morph: it is dropped when that morph stops, so the next one prompts again.
+    private readonly HashSet<string> _grantedTo = new();
+    // Peers we denied recently, so their in-flight frames can't re-open the popup in a loop.
+    private readonly Dictionary<string, DateTime> _promptCooldown = new();
     // Timestamp of the last time another live peer was present in the group (or the connect time).
     // While we are alone this stops updating, so (now - _lastPeerSeen) measures how long we have been
     // the only player in the Pair Key. Auto-disconnect fires after InactivityTimeout of being alone —
@@ -175,6 +181,17 @@ public sealed class SyncManager : IDisposable
         _net.SendMorphRequest(targetName);
     }
 
+    /// <summary>
+    /// Drops a granted consent once the morph it was granted for has actually started.
+    /// A grant is one-shot: without this it stayed <see cref="ConsentStatus.Granted"/> for the rest
+    /// of the session, so every morph after the first was applied to that player without asking.
+    /// </summary>
+    public void ConsumeConsent(string targetName)
+    {
+        if (_net == null) return;
+        _consentStatus.Remove(PeerIdentity.Of(targetName, _config.PairKey));
+    }
+
     // ── Consent API (receiver side) ───────────────────────────────────────────
 
     /// <summary>True when at least one peer is waiting for a consent decision.</summary>
@@ -190,6 +207,8 @@ public sealed class SyncManager : IDisposable
         if (_net == null || _incomingRequests.Count == 0) return;
         var (peerId, _) = _incomingRequests[0];
         _incomingRequests.RemoveAt(0);
+        _grantedTo.Add(peerId);
+        _promptCooldown.Remove(peerId);
         _net.SendMorphConsent(peerId, accepted: true);
     }
 
@@ -199,7 +218,25 @@ public sealed class SyncManager : IDisposable
         if (_net == null || _incomingRequests.Count == 0) return;
         var (peerId, _) = _incomingRequests[0];
         _incomingRequests.RemoveAt(0);
+        _grantedTo.Remove(peerId);
+        // Their morph may already be in flight; hold off re-prompting so those frames can't
+        // reopen the popup the moment it is dismissed.
+        _promptCooldown[peerId] = DateTime.UtcNow;
         _net.SendMorphConsent(peerId, accepted: false);
+    }
+
+    /// <summary>
+    /// Queues a consent popup for <paramref name="peerId"/> unless one is already pending from
+    /// them or they were denied within the cooldown.
+    /// </summary>
+    private void QueueIncomingRequest(string peerId)
+    {
+        if (_incomingRequests.FindIndex(r => r.PeerId == peerId) >= 0) return;
+        if (_promptCooldown.TryGetValue(peerId, out var denied)
+            && (DateTime.UtcNow - denied).TotalSeconds < PromptCooldownSec) return;
+
+        var names = BuildIdToNameMap();
+        _incomingRequests.Add((peerId, names.GetValueOrDefault(peerId) ?? PeerIdentity.Short(peerId)));
     }
 
     /// <summary>Returns the base scaling JSON a peer broadcast, or null if not received yet.</summary>
@@ -263,6 +300,8 @@ public sealed class SyncManager : IDisposable
         _peerInterp.Clear();
         _consentStatus.Clear();
         _incomingRequests.Clear();
+        _grantedTo.Clear();
+        _promptCooldown.Clear();
         _onConsentGranted = null;
     }
 
@@ -356,6 +395,8 @@ public sealed class SyncManager : IDisposable
             _peerInterp.Clear();
             _consentStatus.Clear();
             _incomingRequests.Clear();
+            _grantedTo.Clear();
+            _promptCooldown.Clear();
             _onConsentGranted = null;
             _chat.Print("[BodyFlux] Daily relay quota exceeded — sync paused until tomorrow.");
             return;
@@ -384,10 +425,21 @@ public sealed class SyncManager : IDisposable
                 {
                     _ipc.DeleteTempProfile(0);
                     _peerInterp.Remove("_local_");
+                    // The grant covered this morph only — the sender must ask again for the next.
+                    _grantedTo.Remove(frame.SenderId);
                 }
                 else if (_config.AllowRemoteMorph)
                 {
-                    UpdateInterp("_local_", frame.ProfileJson, 0, isLocal: true);
+                    // Frames are applied only while we have an open grant for that peer. Without
+                    // this the Accept/Deny popup was advisory: a sender that had been accepted once
+                    // could morph us for the rest of the session without asking again.
+                    if (_grantedTo.Contains(frame.SenderId))
+                        UpdateInterp("_local_", frame.ProfileJson, 0, isLocal: true);
+                    else
+                        // No grant — the sender is mid-morph without having asked (an older client
+                        // reusing a cached consent). Prompt instead of dropping it silently, so the
+                        // decision still reaches us and accepting picks the morph up in flight.
+                        QueueIncomingRequest(frame.SenderId);
                 }
                 continue;
             }
@@ -414,8 +466,11 @@ public sealed class SyncManager : IDisposable
                 _consentStatus.Remove(targetId);
                 if (_onConsentGranted != null && _consentStatus.Count == 0)
                     _onConsentGranted = null;
-                // Clear any queued incoming request from this peer.
+                // Clear any queued incoming request from this peer, plus the grant and deny
+                // cooldown we were holding for them — a reconnecting peer starts from scratch.
                 _incomingRequests.RemoveAll(r => r.PeerId == targetId);
+                _grantedTo.Remove(targetId);
+                _promptCooldown.Remove(targetId);
             }
             else
             {
@@ -428,13 +483,11 @@ public sealed class SyncManager : IDisposable
         {
             if (consent.IsRequest)
             {
-                // Incoming morph request — add to queue for the popup window.
-                var names = BuildIdToNameMap();
-                string displayName = names.GetValueOrDefault(consent.SenderId)
-                                  ?? PeerIdentity.Short(consent.SenderId);
-                // Skip duplicate requests from the same peer.
-                if (_incomingRequests.FindIndex(r => r.PeerId == consent.SenderId) < 0)
-                    _incomingRequests.Add((consent.SenderId, displayName));
+                // Incoming morph request — add to queue for the popup window. An explicit request
+                // always prompts, so a peer we denied can ask again without waiting out the
+                // cooldown (that only suppresses auto-prompts driven by stray frames).
+                _promptCooldown.Remove(consent.SenderId);
+                QueueIncomingRequest(consent.SenderId);
             }
             else if (consent.Accepted)
             {
@@ -598,6 +651,8 @@ public sealed class SyncManager : IDisposable
         _peerInterp.Clear();
         _consentStatus.Clear();
         _incomingRequests.Clear();
+        _grantedTo.Clear();
+        _promptCooldown.Clear();
         _onConsentGranted = null;
     }
 
