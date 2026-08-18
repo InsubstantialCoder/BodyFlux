@@ -96,7 +96,12 @@ public sealed class ChatCommands : IDisposable
             return;
         }
 
-        _plugin.ApplyMorphPreset(preset, speedOverride);
+        if (!_plugin.ApplyMorphPreset(preset, speedOverride))
+        {
+            _chat.PrintError($"[BodyFlux] Preset {presetNum} (\"{preset.ProfileName}\") could not be applied — " +
+                              "its Customize+ profile/template was not found.");
+            return;
+        }
         if (_plugin.IsMorphing)
         {
             string speedInfo = speedOverride.HasValue ? $" at speed {speedOverride.Value:F2}" : "";

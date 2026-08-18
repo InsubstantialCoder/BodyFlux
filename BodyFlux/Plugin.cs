@@ -170,6 +170,7 @@ public sealed class Plugin : IDalamudPlugin
 
     // True once the post-login Network Sync startup has run (one-shot, on the framework thread).
     private bool _syncStartupDone;
+    private bool _profilesRefreshedOnLogin;
     // Tracks login state across frames so we can disconnect Network Sync the moment the player logs
     // out (returns to title/character select), not just when the whole plugin is disposed.
     private bool _wasLoggedIn;
@@ -210,6 +211,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             Sync.Disconnect();
             _syncStartupDone = false;
+            _profilesRefreshedOnLogin = false;
             // Require explicit manual reconnect after every logout — never auto-reconnect on login.
             Configuration.NetworkSyncEnabled = false;
             Configuration.Save();
@@ -223,6 +225,17 @@ public sealed class Plugin : IDalamudPlugin
             _syncStartupDone = true;
             try   { Sync.ApplyConfig(); }
             catch (Exception ex) { Log.Error(ex, "[BodyFlux] Network Sync startup failed."); }
+        }
+
+        // Populate the Customize+ profile/template cache once, after login, so that /bodyflux preset
+        // works immediately — without this, Ipc.Profiles stays empty (and preset lookups silently
+        // fail) until the main window is opened once, since RefreshProfiles was previously only
+        // triggered from MainWindow.OnOpen()/the UI refresh buttons.
+        if (!_profilesRefreshedOnLogin && loggedIn)
+        {
+            _profilesRefreshedOnLogin = true;
+            try   { Ipc.RefreshProfiles(); }
+            catch (Exception ex) { Log.Error(ex, "[BodyFlux] Customize+ profile refresh on login failed."); }
         }
 
         Sync.Tick((float)framework.UpdateDelta.TotalSeconds);
@@ -298,7 +311,7 @@ public sealed class Plugin : IDalamudPlugin
     public bool StartSequence(MorphSequence sequence, float? speedOverride = null) => Morph.StartSequence(sequence, speedOverride);
     public bool StartBrioSequence(MorphSequence sequence)  => Morph.StartBrioSequence(sequence);
 
-    public void ApplyMorphPreset(MorphPreset preset, float? speedOverride = null)
+    public bool ApplyMorphPreset(MorphPreset preset, float? speedOverride = null)
         => Morph.ApplyMorphPreset(preset, speedOverride);
 
     public void ApplyBrioMorphPreset(MorphPreset preset, float? speedOverride = null)

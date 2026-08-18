@@ -966,8 +966,13 @@ public sealed class MorphEngine
 
     // ── Preset controls ───────────────────────────────────────────────────────
 
-    /// <summary>Applies a saved preset or history entry, overriding current UI selections.</summary>
-    public void ApplyMorphPreset(MorphPreset preset, float? speedOverride = null)
+    /// <summary>
+    /// Applies a saved preset or history entry, overriding current UI selections. Returns false
+    /// (without starting a morph) if the preset's saved profile/template can no longer be resolved
+    /// against Customize+ — e.g. it was renamed/deleted there, or the profile cache hasn't been
+    /// populated yet.
+    /// </summary>
+    public bool ApplyMorphPreset(MorphPreset preset, float? speedOverride = null)
     {
         if (preset.TargetMode == MorphTargetMode.TemplateOverlay)
         {
@@ -978,7 +983,7 @@ public sealed class MorphEngine
             if (idx < 0)
             {
                 _log.Warning($"[BodyFlux] Preset template '{preset.ProfileName}' not found in Customize+.");
-                return;
+                return false;
             }
             SelectedTemplateIndex = idx;
         }
@@ -991,11 +996,12 @@ public sealed class MorphEngine
             if (idx < 0)
             {
                 _log.Warning($"[BodyFlux] Preset profile '{preset.ProfileName}' not found in Customize+.");
-                return;
+                return false;
             }
             SelectedProfileIndex = idx;
         }
         StartGrowth(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.OriginProfileId);
+        return true;
     }
 
     /// <summary>
