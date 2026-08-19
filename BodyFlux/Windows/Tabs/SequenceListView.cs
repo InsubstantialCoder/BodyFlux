@@ -34,7 +34,7 @@ public sealed class SequenceListView
 
         using (ImRaii.Disabled(busy))
         {
-            if (ImGui.Button("New Sequence", new Vector2(bw + 40 * scale, 0)))
+            if (UiHelpers.PrimaryButton("New Sequence", new Vector2(bw + 40 * scale, 0)))
             {
                 sequences.Add(new MorphSequence { Name = $"Sequence {sequences.Count + 1}" });
                 config.Save();
@@ -136,7 +136,7 @@ public sealed class SequenceListView
             using (ImRaii.Disabled(busy))
             {
                 // A labelled slider (not a drag field) so it's obvious this is the morph speed.
-                if (ImGui.SliderFloat("##spd", ref sp, 0.01f, 1f, "Speed: %.2f/s"))
+                if (UiHelpers.GradientSlider("##spd", ref sp, 0.01f, 1f, "Speed: %.2f/s"))
                     seq.Steps[i] = step with { Speed = Math.Clamp(sp, 0.01f, 1f) };
                 if (ImGui.IsItemDeactivatedAfterEdit()) needSave = true;
             }
@@ -167,7 +167,7 @@ public sealed class SequenceListView
 
             ImGui.SameLine();
             using (ImRaii.Disabled(busy))
-                if (ImGui.Button("Remove")) removeIdx = i;
+                if (UiHelpers.DangerButton("Remove", Vector2.Zero)) removeIdx = i;
 
             // Time to complete this step at its current speed (mirrors the Single tab).
             float stepSecs = seq.Steps[i].Speed > 0f ? 1f / seq.Steps[i].Speed : float.PositiveInfinity;
@@ -196,11 +196,8 @@ public sealed class SequenceListView
         int addModeInt = (int)addMode;
         using (ImRaii.Disabled(busy))
         {
-            if (ImGui.RadioButton("Full Profile##addmode", ref addModeInt, (int)MorphTargetMode.FullProfile))
-                addMode = MorphTargetMode.FullProfile;
-            ImGui.SameLine();
-            if (ImGui.RadioButton("Template Overlay##addmode", ref addModeInt, (int)MorphTargetMode.TemplateOverlay))
-                addMode = MorphTargetMode.TemplateOverlay;
+            if (UiHelpers.ButtonGroup("seqaddmode", UiHelpers.MorphTargetLabels, ref addModeInt))
+                addMode = (MorphTargetMode)addModeInt;
         }
 
         bool addOverlay = addMode == MorphTargetMode.TemplateOverlay;
@@ -266,7 +263,7 @@ public sealed class SequenceListView
         bool canPlay = !seqActive && !busy && seq.Steps.Count > 0 && playAllowed;
         using (ImRaii.Disabled(!canPlay))
         {
-            if (ImGui.Button("Play", new Vector2(bw, 0)))
+            if (UiHelpers.PrimaryButton("Play", new Vector2(bw, 0)))
                 playRequest = seqIndex; // caller starts it with the right engine entry point
         }
         if (!busy && !seqActive && !playAllowed && playBlockedTooltip != null
@@ -279,7 +276,7 @@ public sealed class SequenceListView
         if (onResetActive == null)
         {
             ImGui.SameLine();
-            if (ImGui.Button("Reset", new Vector2(bw, 0)))
+            if (UiHelpers.DangerButton("Reset", new Vector2(bw, 0)))
                 onReset();
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Reset to the original profile (also stops a running sequence).");
@@ -287,22 +284,22 @@ public sealed class SequenceListView
         else
         {
             ImGui.SameLine();
-            if (ImGui.Button("Reset to Origin", new Vector2(bw * 1.4f, 0)))
+            if (UiHelpers.DangerButton("Reset to Origin", new Vector2(bw * 1.4f, 0)))
                 onReset();
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Restores the Origin Profile (also stops a running sequence).");
 
             ImGui.SameLine();
-            if (ImGui.Button("Reset to Active", new Vector2(bw * 1.4f, 0)))
+            if (UiHelpers.DangerButton("Reset to Active", new Vector2(bw * 1.4f, 0)))
                 onResetActive();
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Restores whatever profile is really active on your character (also stops a running sequence).");
         }
 
         ImGui.SameLine();
-        using (ImRaii.Disabled(busy || isPlaying)) // can't delete the active sequence — Stop it first
+        using (ImRaii.Disabled(busy || isPlaying)) // can't delete the active sequence, Stop it first
         {
-            if (ImGui.Button("Delete", new Vector2(bw, 0)))
+            if (UiHelpers.DangerButton("Delete", new Vector2(bw, 0)))
                 deleteIdx = seqIndex;
         }
 

@@ -1,13 +1,19 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.5.9.2</Version>
+    <Version>0.6.0.0</Version>
     <PackageProjectUrl>https://github.com/miragiumxiv/BodyFlux</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="images\icon.png" />
+    <!-- CopyToOutputDirectory so it lands next to BodyFlux.dll in every config (Debug/Release/x64).
+         DalamudPackager already bundled it for the installer icon, but that alone doesn't put it in
+         bin/ for a dev-loaded plugin, which is what Theme.Icon reads from at runtime via
+         PluginInterface.AssemblyLocation. -->
+    <Content Include="images\icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="BodyFlux.Tests" />

@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IClientState           ClientState     { get; private set; } = null!;
     [PluginService] internal static IKeyState              KeyState        { get; private set; } = null!;
     [PluginService] internal static IJobGauges             JobGauges       { get; private set; } = null!;
+    [PluginService] internal static ITextureProvider       TextureProvider { get; private set; } = null!;
 
     // ── Core services ─────────────────────────────────────────────────────────
     internal CustomizePlusIpc Ipc   { get; private init; }

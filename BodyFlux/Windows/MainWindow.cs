@@ -27,17 +27,30 @@ public class MainWindow : Window, IDisposable
     private readonly Tabs.BrioTabView      _brioTab;
     private readonly Tabs.KeybindsTabView  _keybindsTab;
 
-    public MainWindow(Plugin plugin)
-        : base("Body Flux##BodyFluxMain", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+    private readonly string _versionText;
+
+    // ── Collapse state ───────────────────────────────────────────────────────
+    // ImGui's own window collapse is a title-bar feature we no longer have; this reimplements it
+    // by remembering the pre-collapse size and shrinking to just the custom bar's height.
+    private bool    _collapsed;
+    private Vector2 _expandedSize;
+
+    private static readonly WindowSizeConstraints ExpandedConstraints = new()
     {
-        SizeConstraints = new WindowSizeConstraints
-        {
-            MinimumSize = new Vector2(460, 480),
-            MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
-        };
+        MinimumSize = new Vector2(460, 480),
+        MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
+    };
+
+    public MainWindow(Plugin plugin)
+        : base("##BodyFluxMain", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoTitleBar)
+    {
+        SizeConstraints = ExpandedConstraints;
         Size          = new Vector2(500, 600);
         SizeCondition = ImGuiCond.FirstUseEver;
         this.plugin = plugin;
+
+        var version = typeof(Plugin).Assembly.GetName().Version;
+        _versionText = version is null ? "" : $"v{version.Major}.{version.Minor}.{version.Build}.{version.Revision}";
 
         _syncTab   = new Tabs.SyncTabView(plugin);
         _seqList   = new Tabs.SequenceListView(plugin);
@@ -52,6 +65,26 @@ public class MainWindow : Window, IDisposable
 
     public void Dispose() { }
 
+    public override void PreDraw()
+    {
+        Theme.PushColors();
+        Theme.PushStyleVars();
+
+        // MinimumSize (480 tall) is enforced every frame Begin() runs, so a collapsed window kept
+        // springing back to full height, since SetWindowSize alone can't get under a still-active
+        // constraint. Swap to a tight collapsed-height constraint while collapsed instead.
+        float barH = Theme.TitleBarHeight + 2f;
+        SizeConstraints = _collapsed
+            ? new WindowSizeConstraints { MinimumSize = new Vector2(300, barH), MaximumSize = new Vector2(float.MaxValue, barH) }
+            : ExpandedConstraints;
+    }
+
+    public override void PostDraw()
+    {
+        Theme.PopStyleVars();
+        Theme.PopColors();
+    }
+
     public override void OnOpen()
     {
         if (!_refreshedOnOpen)
@@ -65,6 +98,36 @@ public class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
+        bool syncLive = plugin.Configuration.NetworkSyncEnabled
+                     && plugin.NetworkSyncStatus == "Connected";
+        var (closeClicked, collapseToggled) = Theme.DrawCustomTitleBar(
+            "Body Flux", _versionText, syncLive, plugin.ConnectedPeers?.Count ?? 0, _collapsed,
+            plugin.IsCustomizePlusAvailable, plugin.IsBrioAvailable);
+
+        if (closeClicked)
+            IsOpen = false;
+
+        if (collapseToggled)
+        {
+            _collapsed = !_collapsed;
+            if (_collapsed)
+            {
+                _expandedSize = ImGui.GetWindowSize();
+                ImGui.SetWindowSize(new Vector2(_expandedSize.X, Theme.TitleBarHeight + 2f));
+            }
+            else
+            {
+                ImGui.SetWindowSize(_expandedSize);
+            }
+        }
+
+        if (_collapsed) return; // just the bar, skip tabs/content entirely while collapsed
+
+        // Gutter for everything below the title bar. Scoped here (not in Theme.PushStyleVars,
+        // which runs before Begin()) so the title bar itself, which draws at the raw window edge
+        // on purpose, isn't affected — this only reaches the tab bar and each tab's child window.
+        using var contentPad = ImRaii.PushStyle(ImGuiStyleVar.WindowPadding, Theme.ContentPadding);
+
         // ── GPose state-change detection ──────────────────────────────────────
         bool inGpose = plugin.IsInGPose;
 
@@ -101,8 +164,6 @@ public class MainWindow : Window, IDisposable
         // tab is declared. A bare `using var` defers EndTabItem to end of Draw(), leaving the
         // Sync item "open" and causing the following Brio tab to nest under it (and stop
         // responding to clicks) whenever Sync is the active tab.
-        bool syncLive = plugin.Configuration.NetworkSyncEnabled
-                     && plugin.NetworkSyncStatus == "Connected";
         if (syncLive)
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.3f, 0.9f, 0.4f, 1f));
         using (var syncTab = ImRaii.TabItem("Sync"))

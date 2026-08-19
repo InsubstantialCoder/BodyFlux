@@ -35,7 +35,6 @@ public sealed class SyncTabView
 
         float bw     = 90 * ImGuiHelpers.GlobalScale;
         float labelW = 90 * ImGuiHelpers.GlobalScale;
-        float iconSz = ImGui.GetFrameHeight(); // square copy button
         var   config = plugin.Configuration;
 
         ImGui.Spacing();
@@ -72,14 +71,17 @@ public sealed class SyncTabView
         ImGui.Spacing();
 
         // ── Sync Key row ──────────────────────────────────────────────────────
-        float inputW = ImGui.GetContentRegionAvail().X - labelW - 8 * ImGuiHelpers.GlobalScale;
+        // Fixed width instead of stretching to fill the row: the key is always "XXXX-XXXX" (9
+        // chars), so a wide field just pushes Generate/Copy/Connect toward the right edge for no
+        // reason — this keeps them right after the field instead.
+        float keyFieldW = 120 * ImGuiHelpers.GlobalScale;
 
         bool isActive = plugin.IsNetworkActive;
 
-        ImGui.TextUnformatted("Sync Key:");
+        UiHelpers.SectionLabel("Sync Key:", null);
         ImGui.SameLine(labelW);
         if (isActive) ImGui.BeginDisabled();
-        ImGui.SetNextItemWidth(inputW - bw * 2 - iconSz - 8 * ImGuiHelpers.GlobalScale);
+        ImGui.SetNextItemWidth(keyFieldW);
         string pairKey = config.PairKey;
         if (ImGui.InputText("##SyncKey", ref pairKey, 64))
         {
@@ -88,7 +90,7 @@ public sealed class SyncTabView
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("Generate", new Vector2(bw, 0)))
+        if (UiHelpers.PrimaryButton("Generate", new Vector2(bw, 0)))
         {
             config.PairKey = GeneratePairKey();
             config.Save();
@@ -104,17 +106,17 @@ public sealed class SyncTabView
         ImGui.SameLine();
         if (plugin.IsNetworkActive)
         {
-            if (ImGui.Button("Disconnect", new Vector2(bw, 0)))
+            if (UiHelpers.DangerButton("Disconnect", new Vector2(bw, 0)))
                 plugin.DisconnectNetworkSync();
         }
         else if (plugin.IsNetworkIdleDisconnected || plugin.IsNetworkQuotaExhausted)
         {
-            if (ImGui.Button("Reconnect", new Vector2(bw, 0)))
+            if (UiHelpers.PrimaryButton("Reconnect", new Vector2(bw, 0)))
                 plugin.ApplyNetworkSyncConfig();
         }
         else
         {
-            if (ImGui.Button("Connect", new Vector2(bw, 0)))
+            if (UiHelpers.PrimaryButton("Connect", new Vector2(bw, 0)))
                 plugin.ApplyNetworkSyncConfig();
         }
 
@@ -158,7 +160,7 @@ public sealed class SyncTabView
         var maxPeers = plugin.NetworkMaxPeers;
         if (maxPeers.HasValue)
             ImGui.TextDisabled($"Up to {maxPeers} players can share the same Sync Key simultaneously.");
-        ImGui.TextUnformatted("Connected users:");
+        UiHelpers.SectionLabel("Connected users:", null);
 
         var peers     = plugin.ConnectedPeers;
         var localName = plugin.LocalPlayerName;

@@ -135,8 +135,10 @@ public sealed class KeybindsTabView
         ImGui.SameLine(labelW + Math.Max(fieldW, 150 * scale));
 
         // Capturing this row → the Set button becomes Cancel.
-        string setLabel = capturing ? "Cancel" : "Set";
-        if (ImGui.Button($"{setLabel}##set{label}", new Vector2(bw, 0)))
+        bool setClicked = capturing
+            ? ImGui.Button($"Cancel##set{label}", new Vector2(bw, 0))
+            : UiHelpers.PrimaryButton($"Set##set{label}", new Vector2(bw, 0));
+        if (setClicked)
         {
             if (capturing) CancelCapture();
             else           onSet();
@@ -145,7 +147,7 @@ public sealed class KeybindsTabView
         ImGui.SameLine();
         using (ImRaii.Disabled(!bind.IsBound))
         {
-            if (ImGui.Button($"Clear##clr{label}", new Vector2(bw, 0)))
+            if (UiHelpers.DangerButton($"Clear##clr{label}", new Vector2(bw, 0)))
             {
                 bind.Key  = VirtualKey.NO_KEY;
                 bind.Ctrl = bind.Alt = bind.Shift = false;

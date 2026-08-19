@@ -2,6 +2,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
+using BodyFlux.Windows.Tabs;
 
 namespace BodyFlux.Windows;
 
@@ -32,8 +33,17 @@ public sealed class MorphConsentWindow : Window
 
     public override void PreDraw()
     {
+        Theme.PushColors();
+        Theme.PushStyleVars();
+
         var center = ImGui.GetIO().DisplaySize / 2f;
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new System.Numerics.Vector2(0.5f, 0.5f));
+    }
+
+    public override void PostDraw()
+    {
+        Theme.PopStyleVars();
+        Theme.PopColors();
     }
 
     public override void Draw()
@@ -50,10 +60,10 @@ public sealed class MorphConsentWindow : Window
         ImGui.Spacing();
 
         float bw = 80 * scale;
-        if (ImGui.Button("Accept", new Vector2(bw, 0)))
+        if (UiHelpers.PrimaryButton("Accept", new Vector2(bw, 0)))
             _plugin.AcceptIncomingMorphRequest();
         ImGui.SameLine();
-        if (ImGui.Button("Deny", new Vector2(bw, 0)))
+        if (UiHelpers.DangerButton("Deny", new Vector2(bw, 0)))
             _plugin.DenyIncomingMorphRequest();
     }
 }

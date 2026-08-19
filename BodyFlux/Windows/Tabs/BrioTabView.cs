@@ -25,6 +25,12 @@ public sealed class BrioTabView
     private string          _seqAddFilter    = ""; // Sequences "Add step" picker filter
     private MorphTargetMode _seqAddMode      = MorphTargetMode.FullProfile; // Sequences "Add step" target mode
 
+    // Short target labels for the Multi tab's per-actor editor, which keeps its ButtonGroup row on
+    // the same line as its SectionLabel to stay compact inside an indented CollapsingHeader, where
+    // the full-length UiHelpers.MorphTargetLabels text wouldn't fit. Mode uses UiHelpers.MorphModeLabels
+    // directly now that "Loop (x1)"/"Loop (∞)" are short enough to fit there too.
+    private static readonly string[] GroupTargetLabels = ["Full", "Overlay"];
+
     // ── Group (Multi) sub-tab state ───────────────────────────────────────────
     // One configurable entry per actor; "Apply All" morphs them simultaneously. In-memory only.
     private sealed class GroupEntry
@@ -73,46 +79,73 @@ public sealed class BrioTabView
         if (!scroll) return;
 
         float scale  = ImGuiHelpers.GlobalScale;
-        float bw     = 90 * scale;
         var   config = plugin.Configuration;
-
-        // ── Requirements (Customize+ and Brio must both be active) ─────────────
-        var okColor  = new Vector4(0.3f, 0.9f, 0.4f, 1f);
-        var badColor = new Vector4(0.9f, 0.3f, 0.3f, 1f);
+        var   actors = plugin.GetGPoseActors();
 
         ImGui.Spacing();
-        ImGui.PushTextWrapPos(0f);
-        bool cpOk = plugin.IsCustomizePlusAvailable;
-        ImGui.TextColored(cpOk ? okColor : badColor,
-            cpOk ? "Customize+ enabled"
-                 : "Customize+ not detected — please install and enable it");
 
-        bool brioOk = plugin.IsBrioAvailable;
-        ImGui.TextColored(brioOk ? okColor : badColor,
-            brioOk ? "Brio enabled"
-                   : "Brio not detected — please install and enable it");
-        ImGui.PopTextWrapPos();
+        // ── Actor selector: its own full-width row above the columns, since Player's Single
+        //    tab has nothing equivalent to balance it against on either side.
+        DrawActorSelector(actors);
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
+        ImGui.Spacing();
 
-        ImGui.PushTextWrapPos(0f);
-        ImGui.TextDisabled(
-            "Configure an actor + destination below and press Apply to morph it. Multiple actors " +
-            "can morph at once — each appears in the Active Morphs list with its own controls. " +
-            "All actors reset automatically when you exit GPose.");
-        ImGui.PopTextWrapPos();
+        // ── Two columns, same split as Player's Single tab: origin/destination/target on the
+        //    left, speed/mode/easing on the right. A vertical border plus extra cell padding
+        //    keeps the two groups of controls from reading as one continuous block.
+        using (ImRaii.PushStyle(ImGuiStyleVar.CellPadding,
+                   new Vector2(14 * ImGuiHelpers.GlobalScale, ImGui.GetStyle().CellPadding.Y)))
+        using (var table = ImRaii.Table("##BrioColumns", 2, ImGuiTableFlags.BordersInnerV))
+        {
+            if (table)
+            {
+                ImGui.TableSetupColumn("##left",  ImGuiTableColumnFlags.WidthStretch, 1f);
+                ImGui.TableSetupColumn("##right", ImGuiTableColumnFlags.WidthStretch, 1f);
+                ImGui.TableNextRow();
+
+                ImGui.TableSetColumnIndex(0);
+                DrawBrioLeftColumn(config, actors);
+
+                ImGui.TableSetColumnIndex(1);
+                DrawBrioRightColumn(config);
+            }
+        }
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
-
-        // ── Actor selector ────────────────────────────────────────────────────
-        ImGui.TextUnformatted("GPose Actor:");
         ImGui.Spacing();
 
-        var actors = plugin.GetGPoseActors();
+        // ── Apply (adds/updates the selected actor's morph) ───────────────────
+        bool hasDestination = config.MorphTargetMode == MorphTargetMode.TemplateOverlay
+            ? plugin.SelectedBrioTemplateIndex >= 0 && plugin.SelectedBrioTemplateIndex < plugin.SavedTemplates.Count
+            : plugin.SelectedBrioDestIndex     >= 0 && plugin.SelectedBrioDestIndex     < plugin.SavedProfiles.Count;
+        bool canApply = plugin.SelectedBrioActorIndex >= 0 && hasDestination;
+        using (ImRaii.Disabled(!canApply))
+        {
+            if (UiHelpers.PrimaryButton("Apply##Brio", new Vector2(ImGui.GetContentRegionAvail().X, 34 * scale)))
+                plugin.StartBrioMorph();
+        }
+        if (canApply && plugin.IsBrioActorActive((ushort)plugin.SelectedBrioActorIndex)
+            && ImGui.IsItemHovered())
+            ImGui.SetTooltip("This actor already has an active morph, Apply replaces it.");
+
+        // ── Active morphs list ────────────────────────────────────────────────
+        DrawActiveMorphs(actors, scale);
+
+        DrawHistory();
+    }
+
+    private void DrawActorSelector(List<(ushort Index, string Name)> actors)
+    {
+        UiHelpers.SectionLabel("GPose Actor:",
+            "Configure an actor and destination below, then press Apply to morph it. Multiple " +
+            "actors can morph at once, each appears in the Active Morphs list with its own " +
+            "controls. All actors reset automatically when you exit GPose.");
+        ImGui.Spacing();
 
         string actorPreview = "— select an actor —";
         if (plugin.SelectedBrioActorIndex >= 0)
@@ -123,7 +156,7 @@ public sealed class BrioTabView
                 : $"Actor {plugin.SelectedBrioActorIndex} (not in scene)";
         }
 
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X * 0.5f);
         if (ImGui.BeginCombo("##ActorSelect", actorPreview))
         {
             if (actors.Count == 0)
@@ -143,23 +176,19 @@ public sealed class BrioTabView
             }
             ImGui.EndCombo();
         }
+    }
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
+    private void DrawBrioLeftColumn(Configuration config, List<(ushort Index, string Name)> actors)
+    {
         // ── Origin scaling (MCDF) ─────────────────────────────────────────────
-        ImGui.TextUnformatted("Origin Scaling (MCDF):");
+        UiHelpers.SectionLabel("Origin Scaling (MCDF):",
+            "Customize+ can't read a clone's applied scaling, so load the MCDF that was applied " +
+            "to it. It becomes the starting point for the next Apply and is restored on that " +
+            "actor's Reset. Without it, the morph starts from an unscaled body.");
         ImGui.Spacing();
-        ImGui.PushTextWrapPos(0f);
-        ImGui.TextDisabled(
-            "Customize+ can't read a clone's applied scaling, so load the MCDF that was " +
-            "applied to it. It becomes the starting point for the next Apply and is restored " +
-            "on that actor's Reset. Without it, the morph starts from an unscaled body.");
-        ImGui.PopTextWrapPos();
 
-        ImGui.Spacing();
-        if (ImGui.Button("Load MCDF…", new Vector2(bw + 30 * scale, 0)))
+        float bw = 90 * ImGuiHelpers.GlobalScale;
+        if (ImGui.Button("Load MCDF...", new Vector2(bw + 30 * ImGuiHelpers.GlobalScale, 0)))
         {
             var startPath = plugin.GetBrioLastMcdfFolder() ?? "";
             fileDialog.OpenFileDialog(
@@ -185,51 +214,40 @@ public sealed class BrioTabView
         else if (plugin.BrioOriginLabel.Length > 0) // an error was reported
             ImGui.TextColored(new Vector4(0.9f, 0.3f, 0.3f, 1f), plugin.BrioOriginLabel);
         else
-            ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1f), "No MCDF loaded — morph will start unscaled.");
+            ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1f), "No MCDF loaded, morph will start unscaled.");
 
         ImGui.Spacing();
-        ImGui.Separator();
         ImGui.Spacing();
 
         // ── Target mode selector ──────────────────────────────────────────────
-        ImGui.TextUnformatted("Morph Target:");
+        // Drawn before Destination since it determines whether that picker lists profiles
+        // or templates.
+        UiHelpers.SectionLabel("Morph Target:",
+            "Full Profile applies the whole selected profile as the destination, bones not present " +
+            "in it reset to default. Template Overlay blends only the bones defined in the selected " +
+            "Customize+ Template onto the actor's current profile, every other bone stays untouched.");
         ImGui.Spacing();
 
-        int  targetModeInt     = (int)config.MorphTargetMode;
-        bool targetModeChanged = false;
-        if (ImGui.RadioButton("Full Profile##Brio", ref targetModeInt, (int)MorphTargetMode.FullProfile))
-            targetModeChanged = true;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Template Overlay##Brio", ref targetModeInt, (int)MorphTargetMode.TemplateOverlay))
-            targetModeChanged = true;
-        if (targetModeChanged) { config.MorphTargetMode = (MorphTargetMode)targetModeInt; config.Save(); }
-
-        bool overlay = config.MorphTargetMode == MorphTargetMode.TemplateOverlay;
+        int targetModeInt = (int)config.MorphTargetMode;
+        if (UiHelpers.ButtonGroup("BrioMorphTarget", UiHelpers.MorphTargetLabels, ref targetModeInt))
+        {
+            config.MorphTargetMode = (MorphTargetMode)targetModeInt;
+            config.Save();
+        }
 
         ImGui.Spacing();
-        ImGui.PushTextWrapPos(0f);
-        string targetModeDesc = overlay
-            ? "Blends only the bones defined in the selected Customize+ Template onto the actor's current profile — every other bone stays untouched."
-            : "Applies the whole selected profile as the destination — bones not present in it reset to default.";
-        ImGui.TextDisabled(targetModeDesc);
-        ImGui.PopTextWrapPos();
-
-        ImGui.Spacing();
-        ImGui.Separator();
         ImGui.Spacing();
 
         // ── Destination selector ──────────────────────────────────────────────
-        ImGui.TextUnformatted(overlay ? "Overlay Template:" : "Destination Profile:");
-        if (overlay)
-        {
-            ImGui.PushTextWrapPos(0f);
-            ImGui.TextDisabled("Only templates attached to at least one Customize+ profile show up here.");
-            ImGui.PopTextWrapPos();
-        }
+        bool overlay = config.MorphTargetMode == MorphTargetMode.TemplateOverlay;
+        UiHelpers.SectionLabel(overlay ? "Overlay Template:" : "Destination Profile:",
+            overlay
+                ? "The Customize+ Template the morph plays toward. Only templates attached to at " +
+                  "least one profile show up here."
+                : "The saved Customize+ profile the morph plays toward for this actor.");
+        ImGui.Spacing();
 
-        float destW = ImGui.GetContentRegionAvail().X - (bw + 8 * scale);
-        ImGui.SetNextItemWidth(destW);
-
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         if (overlay)
         {
             var names = plugin.SavedTemplates.Select(t => t.Name).ToList();
@@ -247,171 +265,132 @@ public sealed class BrioTabView
             plugin.SelectedBrioDestIndex = idx;
         }
 
-        ImGui.SameLine();
+        ImGui.Spacing();
         if (ImGui.Button("Refresh##BrioRefresh", new Vector2(bw, 0)))
         {
             plugin.RefreshProfiles();
             plugin.SelectedBrioDestIndex     = -1;
             plugin.SelectedBrioTemplateIndex = -1;
         }
+    }
 
-        ImGui.Spacing();
-
+    private void DrawBrioRightColumn(Configuration config)
+    {
         // ── Speed ─────────────────────────────────────────────────────────────
         float speed = config.BrioGrowthSpeed;
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 180 * scale);
-        if (ImGui.SliderFloat("Growth Speed (range/sec)##Brio", ref speed, 0.01f, 1f, "%.2f"))
+        UiHelpers.SectionLabel("Growth Speed:",
+            "How fast the morph plays, in Customize+ range units per second, higher is faster. " +
+            "\"Time to complete\" below shows what that works out to at the current speed.");
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        if (UiHelpers.GradientSlider("##BrioGrowthSpeed", ref speed, 0.01f, 1f, "%.2f range/sec"))
         {
             config.BrioGrowthSpeed = speed;
             config.Save();
         }
 
-        ImGui.Spacing();
         float secs = speed > 0f ? 1f / speed : float.PositiveInfinity;
         ImGui.TextDisabled($"Time to complete: {secs:F1}s");
 
         ImGui.Spacing();
-        ImGui.Separator();
         ImGui.Spacing();
 
         // ── Mode selector ─────────────────────────────────────────────────────
-        ImGui.TextUnformatted("Morph Mode:");
+        UiHelpers.SectionLabel("Morph Mode:",
+            "Simple morphs from the actor's current profile to the destination once. Loop (x1) " +
+            "morphs there and reverses back once. Loop (∞) continuously ping-pongs between " +
+            "the starting and destination profiles until Reset is pressed.");
         ImGui.Spacing();
 
-        int  modeInt    = (int)config.MorphMode;
-        bool modeChanged = false;
-        if (ImGui.RadioButton("Simple##Brio",          ref modeInt, (int)MorphMode.Simple))       modeChanged = true;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Loop (Single)##Brio",   ref modeInt, (int)MorphMode.LoopSingle))   modeChanged = true;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Loop (Infinite)##Brio", ref modeInt, (int)MorphMode.LoopInfinite)) modeChanged = true;
-        if (modeChanged) { config.MorphMode = (MorphMode)modeInt; config.Save(); }
-
-        ImGui.Spacing();
-        ImGui.PushTextWrapPos(0f);
-        string modeDesc = config.MorphMode switch
+        int modeInt = (int)config.MorphMode;
+        if (UiHelpers.ButtonGroup("BrioMorphMode", UiHelpers.MorphModeLabels, ref modeInt))
         {
-            MorphMode.Simple       => "Morphs from the actor's current profile to the destination once.",
-            MorphMode.LoopSingle   => "Morphs to the destination, then reverses back to the starting profile once.",
-            MorphMode.LoopInfinite => "Continuously ping-pongs between the starting and destination profiles until Reset is pressed.",
-            _                      => ""
-        };
-        ImGui.TextDisabled(modeDesc);
-        ImGui.PopTextWrapPos();
+            config.MorphMode = (MorphMode)modeInt;
+            config.Save();
+        }
 
         ImGui.Spacing();
-        ImGui.Separator();
         ImGui.Spacing();
 
         // ── Easing Curve ──────────────────────────────────────────────────────
-        ImGui.TextUnformatted("Easing Curve:");
+        UiHelpers.SectionLabel("Easing Curve:",
+            "Linear is constant speed throughout. Ease In starts slow and accelerates toward the " +
+            "destination. Ease Out starts fast and decelerates as it approaches the destination. " +
+            "Ease In-Out starts slow, accelerates through the middle, then decelerates at the end.");
         ImGui.Spacing();
 
-        int  easingInt     = (int)config.BrioEasingMode;
-        bool easingChanged = false;
-        if (ImGui.RadioButton("Linear##BrioEasing",      ref easingInt, (int)EasingMode.Linear))    easingChanged = true;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Ease In##BrioEasing",     ref easingInt, (int)EasingMode.EaseIn))    easingChanged = true;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Ease Out##BrioEasing",    ref easingInt, (int)EasingMode.EaseOut))   easingChanged = true;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Ease In-Out##BrioEasing", ref easingInt, (int)EasingMode.EaseInOut)) easingChanged = true;
-        if (easingChanged) { config.BrioEasingMode = (EasingMode)easingInt; config.Save(); }
-
-        ImGui.Spacing();
-        ImGui.PushTextWrapPos(0f);
-        string easingDesc = config.BrioEasingMode switch
+        int easingInt = (int)config.BrioEasingMode;
+        if (UiHelpers.ButtonGroup("BrioEasing", UiHelpers.EasingLabels, ref easingInt))
         {
-            EasingMode.EaseIn    => "Starts slow and accelerates toward the destination.",
-            EasingMode.EaseOut   => "Starts fast and decelerates as it approaches the destination.",
-            EasingMode.EaseInOut => "Starts slow, accelerates through the middle, then decelerates at the end.",
-            _                    => "Constant speed throughout the morph."
-        };
-        ImGui.TextDisabled(easingDesc);
-        ImGui.PopTextWrapPos();
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
-        // ── Apply (adds/updates the selected actor's morph) ───────────────────
-        bool hasDestination = config.MorphTargetMode == MorphTargetMode.TemplateOverlay
-            ? plugin.SelectedBrioTemplateIndex >= 0 && plugin.SelectedBrioTemplateIndex < plugin.SavedTemplates.Count
-            : plugin.SelectedBrioDestIndex     >= 0 && plugin.SelectedBrioDestIndex     < plugin.SavedProfiles.Count;
-        bool canApply = plugin.SelectedBrioActorIndex >= 0 && hasDestination;
-        using (ImRaii.Disabled(!canApply))
-        {
-            if (ImGui.Button("Apply##Brio", new Vector2(bw + 30 * scale, 0)))
-                plugin.StartBrioMorph();
+            config.BrioEasingMode = (EasingMode)easingInt;
+            config.Save();
         }
-        if (canApply && plugin.IsBrioActorActive((ushort)plugin.SelectedBrioActorIndex)
-            && ImGui.IsItemHovered())
-            ImGui.SetTooltip("This actor already has an active morph — Apply replaces it.");
-
-        // ── Active morphs list ────────────────────────────────────────────────
-        DrawActiveMorphs(actors, bw, scale);
-
-        DrawHistory();
     }
 
-    /// <summary>Renders one row per active Brio actor morph, each with its own controls.</summary>
-    private void DrawActiveMorphs(List<(ushort Index, string Name)> actors, float bw, float scale)
+    /// <summary>Renders one card per active Brio actor morph, each with its own progress + controls.</summary>
+    private void DrawActiveMorphs(List<(ushort Index, string Name)> actors, float scale)
     {
         var active = plugin.GetActiveBrioMorphs();
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        ImGui.TextUnformatted($"Active Morphs ({active.Count}):");
+        UiHelpers.SectionLabel($"Active Morphs ({active.Count}):", null);
         ImGui.Spacing();
 
         if (active.Count == 0)
         {
-            ImGui.TextDisabled("   No actors are being morphed. Configure above and press Apply.");
+            ImGui.TextDisabled("No actors are being morphed. Configure above and press Apply.");
             return;
         }
 
+        float h = 30 * scale;
         foreach (var m in active)
         {
             ImGui.PushID(m.Index);
-
-            var found = actors.Find(a => a.Index == m.Index);
-            string name = found.Name ?? "(not in scene)";
-            ImGui.TextUnformatted($"[{m.Index}] {name}");
-            if (m.SeqRunning)
+            UiHelpers.Card(innerWidth =>
             {
+                var found = actors.Find(a => a.Index == m.Index);
+                string name = found.Name ?? "(not in scene)";
+                ImGui.TextUnformatted($"[{m.Index}] {name}");
+                if (m.SeqRunning)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled($"(sequence step {m.SeqStep}/{m.SeqStepCount})");
+                }
+
+                UiHelpers.GradientProgressBar(m.Progress, new Vector2(innerWidth, 16 * scale),
+                                               $"{m.Progress * 100f:F0}%  ({m.BoneCount} bones)");
+                ImGui.Spacing();
+
+                // Reverse only applies to single morphs (sequences chain forward only).
+                bool  showReverse = !m.SeqRunning && (m.IsMorphing || m.IsPaused || m.IsFinished);
+                float gap         = ImGui.GetStyle().ItemSpacing.X;
+                float primaryW    = showReverse ? (innerWidth - gap * 2f) / 3f : innerWidth - gap;
+                float reverseW    = primaryW;
+                float resetW      = innerWidth - gap * 2f - primaryW - reverseW;
+                if (!showReverse) resetW = innerWidth - gap - primaryW;
+
+                if (m.IsMorphing)
+                {
+                    if (UiHelpers.PrimaryButton("Pause", new Vector2(primaryW, h))) plugin.PauseBrioActor(m.Index);
+                }
+                else if (m.IsPaused)
+                {
+                    if (UiHelpers.PrimaryButton("Resume", new Vector2(primaryW, h))) plugin.ResumeBrioActor(m.Index);
+                }
+                else
+                {
+                    ImGui.Dummy(new Vector2(primaryW, h)); // keeps Reverse/Reset aligned when there's no Pause/Resume
+                }
+
+                if (showReverse)
+                {
+                    ImGui.SameLine();
+                    if (ImGui.Button("Reverse", new Vector2(reverseW, h))) plugin.ReverseBrioActor(m.Index);
+                }
+
                 ImGui.SameLine();
-                ImGui.TextDisabled($"— sequence step {m.SeqStep}/{m.SeqStepCount}");
-            }
-
-            ImGui.ProgressBar(m.Progress, new Vector2(-1, 16 * scale),
-                              $"{m.Progress * 100f:F0}%%  ({m.BoneCount} bones)");
-
-            bool drew = false;
-            if (m.IsMorphing)
-            {
-                if (ImGui.Button("Pause", new Vector2(bw, 0))) plugin.PauseBrioActor(m.Index);
-                drew = true;
-            }
-            else if (m.IsPaused)
-            {
-                if (ImGui.Button("Resume", new Vector2(bw, 0))) plugin.ResumeBrioActor(m.Index);
-                drew = true;
-            }
-
-            // Reverse only applies to single morphs (sequences chain forward only).
-            if (!m.SeqRunning && (m.IsMorphing || m.IsPaused || m.IsFinished))
-            {
-                if (drew) ImGui.SameLine();
-                if (ImGui.Button("Reverse", new Vector2(bw, 0))) plugin.ReverseBrioActor(m.Index);
-                drew = true;
-            }
-
-            if (drew) ImGui.SameLine();
-            if (ImGui.Button("Reset", new Vector2(bw, 0))) plugin.ResetBrioActor(m.Index);
-
-            ImGui.PopID();
+                if (UiHelpers.DangerButton("Reset", new Vector2(resetW, h))) plugin.ResetBrioActor(m.Index);
+            });
             ImGui.Spacing();
+            ImGui.PopID();
         }
     }
 
@@ -446,12 +425,12 @@ public sealed class BrioTabView
             actorName = found.Name ?? "(not in scene)";
         }
 
-        ImGui.TextUnformatted("Target actor:");
+        UiHelpers.SectionLabel("Target actor:", null);
         ImGui.SameLine();
         ImGui.TextColored(actorSelected ? new Vector4(0.4f, 0.9f, 0.6f, 1f) : new Vector4(0.9f, 0.7f, 0.2f, 1f),
             actorName);
 
-        ImGui.TextUnformatted("Origin MCDF:");
+        UiHelpers.SectionLabel("Origin MCDF:", null);
         ImGui.SameLine();
         ImGui.TextDisabled(plugin.BrioOriginLoaded ? plugin.BrioOriginLabel : "none — starts from permanent/identity");
 
@@ -507,7 +486,7 @@ public sealed class BrioTabView
         ImGui.Spacing();
 
         // ── Add actor ─────────────────────────────────────────────────────────
-        ImGui.TextUnformatted("Add actor:");
+        UiHelpers.SectionLabel("Add actor:", null);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         if (ImGui.BeginCombo("##GroupAddActor", "— select an actor to add —"))
@@ -575,18 +554,18 @@ public sealed class BrioTabView
 
         using (ImRaii.Disabled(applyable == 0))
         {
-            if (ImGui.Button($"Apply All ({applyable})", new Vector2(bw + 40 * scale, 0)))
+            if (UiHelpers.PrimaryButton($"Apply All ({applyable})", new Vector2(bw + 40 * scale, 0)))
                 ApplyGroup();
         }
 
         ImGui.Spacing();
         if (ImGui.Button("Pause All",   new Vector2(bw, 0))) plugin.PauseAllBrio();
         ImGui.SameLine();
-        if (ImGui.Button("Resume All",  new Vector2(bw, 0))) plugin.ResumeAllBrio();
+        if (UiHelpers.PrimaryButton("Resume All",  new Vector2(bw, 0))) plugin.ResumeAllBrio();
         ImGui.SameLine();
         if (ImGui.Button("Reverse All", new Vector2(bw, 0))) plugin.ReverseAllBrio();
         ImGui.SameLine();
-        if (ImGui.Button("Reset All",   new Vector2(bw, 0))) plugin.ResetAllBrio();
+        if (UiHelpers.DangerButton("Reset All",   new Vector2(bw, 0))) plugin.ResetAllBrio();
     }
 
     /// <summary>
@@ -622,18 +601,15 @@ public sealed class BrioTabView
     private void DrawGroupEntryEditor(GroupEntry g, int index, float bw, float scale, ref int removeIdx)
     {
         // ── Target mode ────────────────────────────────────────────────────────
-        ImGui.TextUnformatted("Target:");
+        UiHelpers.SectionLabel("Target:", null);
         ImGui.SameLine();
         int grpTargetModeInt = (int)g.TargetMode;
-        if (ImGui.RadioButton("Full##grptgt", ref grpTargetModeInt, (int)MorphTargetMode.FullProfile))
-            g.TargetMode = (MorphTargetMode)grpTargetModeInt;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Overlay##grptgt", ref grpTargetModeInt, (int)MorphTargetMode.TemplateOverlay))
+        if (UiHelpers.ButtonGroup("grptgt", GroupTargetLabels, ref grpTargetModeInt))
             g.TargetMode = (MorphTargetMode)grpTargetModeInt;
 
         // ── Destination ───────────────────────────────────────────────────────
         bool grpOverlay = g.TargetMode == MorphTargetMode.TemplateOverlay;
-        ImGui.TextUnformatted(grpOverlay ? "Overlay:" : "Destination:");
+        UiHelpers.SectionLabel(grpOverlay ? "Overlay:" : "Destination:", null);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         if (grpOverlay)
@@ -654,7 +630,7 @@ public sealed class BrioTabView
         }
 
         // ── MCDF origin ───────────────────────────────────────────────────────
-        if (ImGui.Button("Load MCDF…##grp"))
+        if (ImGui.Button("Load MCDF...##grp"))
         {
             var startPath = plugin.GetBrioLastMcdfFolder() ?? "";
             fileDialog.OpenFileDialog(
@@ -673,7 +649,7 @@ public sealed class BrioTabView
         if (g.OriginMcdfJson != null)
         {
             ImGui.SameLine();
-            if (ImGui.Button("Clear##grpmcdf")) { g.OriginMcdfJson = null; g.OriginMcdfLabel = ""; }
+            if (UiHelpers.DangerButton("Clear##grpmcdf", Vector2.Zero)) { g.OriginMcdfJson = null; g.OriginMcdfLabel = ""; }
         }
         ImGui.SameLine();
         if (g.OriginMcdfJson != null)
@@ -686,23 +662,20 @@ public sealed class BrioTabView
         // ── Speed ─────────────────────────────────────────────────────────────
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 60 * scale);
         float sp = g.Speed;
-        if (ImGui.SliderFloat("Speed##grp", ref sp, 0.01f, 1f, "%.2f")) g.Speed = sp;
+        if (UiHelpers.GradientSlider("Speed##grp", ref sp, 0.01f, 1f, "%.2f")) g.Speed = sp;
 
         float grpSecs = g.Speed > 0f ? 1f / g.Speed : float.PositiveInfinity;
         ImGui.TextDisabled($"Time to complete: {grpSecs:F1}s");
 
         // ── Mode ──────────────────────────────────────────────────────────────
-        ImGui.TextUnformatted("Mode:");
+        UiHelpers.SectionLabel("Mode:", null);
         ImGui.SameLine();
         int modeInt = (int)g.Mode;
-        if (ImGui.RadioButton("Simple##grpm",  ref modeInt, (int)MorphMode.Simple))       g.Mode = (MorphMode)modeInt;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Loop×1##grpm",  ref modeInt, (int)MorphMode.LoopSingle))   g.Mode = (MorphMode)modeInt;
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Loop∞##grpm",   ref modeInt, (int)MorphMode.LoopInfinite)) g.Mode = (MorphMode)modeInt;
+        if (UiHelpers.ButtonGroup("grpm", UiHelpers.MorphModeLabels, ref modeInt))
+            g.Mode = (MorphMode)modeInt;
 
         // ── Easing ────────────────────────────────────────────────────────────
-        ImGui.TextUnformatted("Easing:");
+        UiHelpers.SectionLabel("Easing:", null);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(140 * scale);
         if (ImGui.BeginCombo("##grpeas", UiHelpers.EasingNames[(int)g.Easing]))
@@ -720,10 +693,10 @@ public sealed class BrioTabView
         if (plugin.IsBrioActorActive(g.ActorIndex))
         {
             float prog = plugin.GetBrioActorProgress(g.ActorIndex);
-            ImGui.ProgressBar(prog, new Vector2(-1, 14 * scale), $"{prog * 100f:F0}%%");
+            UiHelpers.GradientProgressBar(prog, new Vector2(-1, 14 * scale), $"{prog * 100f:F0}%");
         }
 
-        if (ImGui.Button("Remove##grp", new Vector2(bw, 0))) removeIdx = index;
+        if (UiHelpers.DangerButton("Remove##grp", new Vector2(bw, 0))) removeIdx = index;
         ImGui.Spacing();
     }
 
@@ -769,7 +742,7 @@ public sealed class BrioTabView
 
             using (ImRaii.Disabled(!canApply))
             {
-                if (ImGui.Button($"Apply##BrioPreset{i}", new Vector2(bw, 0)))
+                if (UiHelpers.PrimaryButton($"Apply##BrioPreset{i}", new Vector2(bw, 0)))
                     plugin.ApplyBrioMorphPreset(preset!);
             }
             if (hasPreset && !canApply && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
@@ -786,7 +759,7 @@ public sealed class BrioTabView
             ImGui.SameLine();
             using (ImRaii.Disabled(!hasPreset))
             {
-                if (ImGui.Button($"Clear##BrioPreset{i}", new Vector2(bw, 0)))
+                if (UiHelpers.DangerButton($"Clear##BrioPreset{i}", new Vector2(bw, 0)))
                     plugin.ClearBrioPreset(i);
             }
 
