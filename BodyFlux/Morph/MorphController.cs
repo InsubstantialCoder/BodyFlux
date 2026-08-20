@@ -52,6 +52,7 @@ public sealed class MorphController
     private float     _direction; // +1 = forward (origin→dest), -1 = reverse (dest→origin)
     private MorphMode  _mode;
     private EasingMode _easing;
+    private EasingCurve? _customCurve;
     private JObject?  _workingProfile;
     private Dictionary<string, BoneAnim> _boneAnims = [];
 
@@ -112,12 +113,13 @@ public sealed class MorphController
     public void Start(ushort targetIndex,
                       JObject profileBase, JObject originBones, JObject destBones,
                       MorphMode mode = MorphMode.Simple, EasingMode easing = EasingMode.Linear,
-                      bool externaliseRoot = false)
+                      bool externaliseRoot = false, EasingCurve? customCurve = null)
     {
-        TargetIndex = targetIndex;
-        _mode       = mode;
-        _easing     = easing;
-        _direction  = 1f;
+        TargetIndex  = targetIndex;
+        _mode        = mode;
+        _easing      = easing;
+        _customCurve = customCurve;
+        _direction   = 1f;
         _externaliseRoot = externaliseRoot;
         CurrentRootScale = null;
 
@@ -302,6 +304,7 @@ public sealed class MorphController
         _progress        = 0f;
         _direction       = 1f;
         _easing          = EasingMode.Linear;
+        _customCurve     = null;
         _boneAnims       = [];
         _workingProfile  = null;
         _externaliseRoot = false;
@@ -364,7 +367,9 @@ public sealed class MorphController
         var workBones = _workingProfile?["Bones"] as JObject;
         if (workBones == null) return null;
 
-        var t = EasingHelper.Apply(_progress, _easing);
+        var t = _customCurve is { } cc
+            ? CubicBezier.Evaluate(_progress, cc.P1, cc.P2)
+            : EasingHelper.Apply(_progress, _easing);
         foreach (var (bone, anim) in _boneAnims)
         {
             // The externalised root is driven through Brio, not C+ — skip it in the profile

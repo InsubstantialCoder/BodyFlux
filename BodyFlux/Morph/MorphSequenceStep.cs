@@ -17,4 +17,5 @@ public record MorphSequenceStep(
     float      Speed,
     EasingMode Easing,
     MorphTargetMode TargetMode = MorphTargetMode.FullProfile,
-    Guid?      TemplateOwnerProfileId = null);
+    Guid?      TemplateOwnerProfileId = null,
+    Guid?      EasingCurveId = null);

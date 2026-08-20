@@ -142,22 +142,15 @@ public sealed class SequenceListView
             }
 
             ImGui.SameLine();
-            ImGui.SetNextItemWidth(120 * scale);
+            ImGui.SetNextItemWidth(140 * scale);
             using (ImRaii.Disabled(busy))
             {
-                if (ImGui.BeginCombo("##eas", UiHelpers.EasingNames[(int)seq.Steps[i].Easing]))
+                var stepMode = seq.Steps[i].Easing;
+                var stepCurveId = seq.Steps[i].EasingCurveId;
+                if (UiHelpers.EasingCombo("##eas", config, ref stepMode, ref stepCurveId))
                 {
-                    for (int e = 0; e < UiHelpers.EasingNames.Length; e++)
-                    {
-                        bool sel = (int)seq.Steps[i].Easing == e;
-                        if (ImGui.Selectable(UiHelpers.EasingNames[e], sel))
-                        {
-                            seq.Steps[i] = seq.Steps[i] with { Easing = (EasingMode)e };
-                            needSave = true;
-                        }
-                        if (sel) ImGui.SetItemDefaultFocus();
-                    }
-                    ImGui.EndCombo();
+                    seq.Steps[i] = seq.Steps[i] with { Easing = stepMode, EasingCurveId = stepCurveId };
+                    needSave = true;
                 }
             }
 

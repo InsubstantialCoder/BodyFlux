@@ -41,9 +41,15 @@ public class Configuration : IPluginConfiguration
     // really active on the character regardless of this setting.
     public Guid? OriginProfileId { get; set; } = null;
 
-    // Easing curve applied to the interpolation progress each frame.
-    public EasingMode EasingMode     { get; set; } = EasingMode.Linear;
-    public EasingMode BrioEasingMode { get; set; } = EasingMode.Linear;
+    // Easing curve applied to the interpolation progress each frame. A non-null …CurveId wins over
+    // the matching EasingMode (which is then just the last built-in the picker had selected).
+    public EasingMode EasingMode        { get; set; } = EasingMode.Linear;
+    public Guid?       EasingCurveId     { get; set; } = null;
+    public EasingMode BrioEasingMode     { get; set; } = EasingMode.Linear;
+    public Guid?       BrioEasingCurveId { get; set; } = null;
+
+    // User-authored bezier easing curves (Easing tab).
+    public List<EasingCurve> CustomEasingCurves { get; set; } = [];
 
     // ── Presets & History ────────────────────────────────────────────────────
     public List<MorphPreset?> Presets           { get; set; } = [];

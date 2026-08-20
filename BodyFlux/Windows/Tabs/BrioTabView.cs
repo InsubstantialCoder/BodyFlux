@@ -43,6 +43,7 @@ public sealed class BrioTabView
         public float      Speed  = 0.5f;
         public MorphMode  Mode   = MorphMode.Simple;
         public EasingMode Easing = EasingMode.Linear;
+        public Guid?      EasingCurveId;
         public MorphTargetMode TargetMode = MorphTargetMode.FullProfile;
     }
     private readonly List<GroupEntry> _group = [];
@@ -318,10 +319,13 @@ public sealed class BrioTabView
             "Ease In-Out starts slow, accelerates through the middle, then decelerates at the end.");
         ImGui.Spacing();
 
-        int easingInt = (int)config.BrioEasingMode;
-        if (UiHelpers.ButtonGroup("BrioEasing", UiHelpers.EasingLabels, ref easingInt))
+        ImGui.SetNextItemWidth(200 * ImGuiHelpers.GlobalScale);
+        var brioMode = config.BrioEasingMode;
+        var brioCurveId = config.BrioEasingCurveId;
+        if (UiHelpers.EasingCombo("##BrioEasing", config, ref brioMode, ref brioCurveId))
         {
-            config.BrioEasingMode = (EasingMode)easingInt;
+            config.BrioEasingMode    = brioMode;
+            config.BrioEasingCurveId = brioCurveId;
             config.Save();
         }
     }
@@ -593,7 +597,7 @@ public sealed class BrioTabView
             }
 
             plugin.StartBrioMorphFor(g.ActorIndex, destId, g.OriginMcdfJson, g.Speed, g.Mode, g.Easing,
-                g.TargetMode, templateOwnerProfileId);
+                g.TargetMode, templateOwnerProfileId, g.EasingCurveId);
         }
     }
 
@@ -677,16 +681,13 @@ public sealed class BrioTabView
         // ── Easing ────────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Easing:", null);
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(140 * scale);
-        if (ImGui.BeginCombo("##grpeas", UiHelpers.EasingNames[(int)g.Easing]))
+        ImGui.SetNextItemWidth(160 * scale);
+        var gMode = g.Easing;
+        var gCurveId = g.EasingCurveId;
+        if (UiHelpers.EasingCombo("##grpeas", plugin.Configuration, ref gMode, ref gCurveId))
         {
-            for (int e = 0; e < UiHelpers.EasingNames.Length; e++)
-            {
-                bool sel = (int)g.Easing == e;
-                if (ImGui.Selectable(UiHelpers.EasingNames[e], sel)) g.Easing = (EasingMode)e;
-                if (sel) ImGui.SetItemDefaultFocus();
-            }
-            ImGui.EndCombo();
+            g.Easing = gMode;
+            g.EasingCurveId = gCurveId;
         }
 
         // ── Live progress (when this actor is morphing) + remove ──────────────
@@ -771,7 +772,7 @@ public sealed class BrioTabView
             {
                 ImGui.TextUnformatted(preset!.ProfileName);
                 ImGui.SameLine();
-                ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing)}  {UiHelpers.TargetModeShort(preset.TargetMode)})");
+                ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing, preset.EasingCurveId, config)}  {UiHelpers.TargetModeShort(preset.TargetMode)})");
 
                 // Second line: the captured target actor and MCDF origin.
                 if (preset.TargetActorName != null || preset.OriginMcdfLabel != null)
@@ -826,7 +827,7 @@ public sealed class BrioTabView
             ImGui.SameLine();
             ImGui.TextUnformatted(entry.ProfileName);
             ImGui.SameLine();
-            ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing)})");
+            ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing, entry.EasingCurveId, config)})");
         }
 
         if (toApply != null)

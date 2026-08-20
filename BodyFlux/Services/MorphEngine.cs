@@ -259,7 +259,8 @@ public sealed class MorphEngine
     /// let callers (presets, history) supply per-morph values without touching saved config.
     /// </summary>
     public void StartGrowth(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
-                            MorphTargetMode? targetModeOverride = null, Guid? originOverride = null)
+                            MorphTargetMode? targetModeOverride = null, Guid? originOverride = null,
+                            Guid? easingCurveIdOverride = null)
     {
         if (_player.Controller.IsMorphing)
         {
@@ -376,8 +377,10 @@ public sealed class MorphEngine
         var originBones = originJObj["Bones"] as JObject ?? new JObject();
         var destBones   = destJObj  ["Bones"] as JObject ?? new JObject();
 
-        var resolvedMode   = modeOverride   ?? _config.MorphMode;
-        var resolvedEasing = easingOverride ?? _config.EasingMode;
+        var resolvedMode     = modeOverride   ?? _config.MorphMode;
+        var resolvedEasing   = easingOverride ?? _config.EasingMode;
+        var resolvedCurveId  = easingCurveIdOverride ?? _config.EasingCurveId;
+        var resolvedCurve    = resolvedCurveId is { } cid ? _config.CustomEasingCurves.Find(c => c.Id == cid) : null;
 
         // Template Overlay: only the bones defined in the selected template should animate —
         // everything else stays at the origin's value. Build a virtual destination that reflects
@@ -390,7 +393,7 @@ public sealed class MorphEngine
         // not fight Brio's pose-hold over n_root (the cause of the height flicker).
         TrySetupRootExternalisation(_player, targetIndex);
         _player.Controller.Start(targetIndex, originJObj, originBones, effectiveDestBones,
-                                 resolvedMode, resolvedEasing, _player.RootExternalised);
+                                 resolvedMode, resolvedEasing, _player.RootExternalised, resolvedCurve);
 
         _sync.ResetSendThrottle();
 
@@ -408,7 +411,8 @@ public sealed class MorphEngine
             speedOverride ?? _config.GrowthSpeed, resolvedMode, resolvedEasing,
             TargetMode: resolvedTargetMode, TemplateOwnerProfileId: templateOwnerProfileId,
             OriginProfileId: usedOriginId,
-            OriginProfileName: usedOriginId is { } uid ? ResolveProfileName(uid) : null);
+            OriginProfileName: usedOriginId is { } uid ? ResolveProfileName(uid) : null,
+            EasingCurveId: resolvedCurveId);
         _config.RecentMorphs.RemoveAll(h => h.ProfileId == destId);
         _config.RecentMorphs.Insert(0, historyEntry);
         if (_config.RecentMorphs.Count > 5)
@@ -597,8 +601,9 @@ public sealed class MorphEngine
         TrySetupRootExternalisation(_player, 0);
         // Build the bone plan. Mode/easing: Simple + the configured easing. The time ticker never
         // runs for a gauge morph, but easing still shapes the gauge→scale curve.
+        var gaugeCurve = _config.EasingCurveId is { } gcid ? _config.CustomEasingCurves.Find(c => c.Id == gcid) : null;
         _player.Controller.Start(0, originJObj, originBones, effectiveDestBones,
-                                 MorphMode.Simple, _config.EasingMode, _player.RootExternalised);
+                                 MorphMode.Simple, _config.EasingMode, _player.RootExternalised, gaugeCurve);
 
         // Switch from time-driven to gauge-driven: clear the controller's morphing flag so the
         // engine's gauge branch owns it, and seed the smoother at the current reading so it does
@@ -634,7 +639,7 @@ public sealed class MorphEngine
     /// loaded MCDF → permanent C+ profile → identity (unscaled). Records the morph in Brio history.
     /// </summary>
     public void StartBrioMorph(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
-                               MorphTargetMode? targetModeOverride = null)
+                               MorphTargetMode? targetModeOverride = null, Guid? easingCurveIdOverride = null)
     {
         if (SelectedBrioActorIndex < 0)
         {
@@ -667,17 +672,20 @@ public sealed class MorphEngine
             (destId, destName) = profiles[SelectedBrioDestIndex];
         }
 
-        var resolvedMode   = modeOverride   ?? _config.MorphMode;
-        var resolvedEasing = easingOverride ?? _config.BrioEasingMode;
+        var resolvedMode    = modeOverride   ?? _config.MorphMode;
+        var resolvedEasing  = easingOverride ?? _config.BrioEasingMode;
+        var resolvedCurveId = easingCurveIdOverride ?? _config.BrioEasingCurveId;
 
         if (!StartBrioMorphFor((ushort)SelectedBrioActorIndex, destId, _brioOriginJson,
-                               speedOverride, resolvedMode, resolvedEasing, resolvedTargetMode, templateOwnerProfileId))
+                               speedOverride, resolvedMode, resolvedEasing, resolvedTargetMode, templateOwnerProfileId,
+                               resolvedCurveId))
             return;
 
         // Record in Brio history (dedup by destination, newest first, cap at 5)
         var historyEntry = new MorphPreset(destId, destName,
             speedOverride ?? _config.BrioGrowthSpeed, resolvedMode, resolvedEasing,
-            TargetMode: resolvedTargetMode, TemplateOwnerProfileId: templateOwnerProfileId);
+            TargetMode: resolvedTargetMode, TemplateOwnerProfileId: templateOwnerProfileId,
+            EasingCurveId: resolvedCurveId);
         _config.BrioRecentMorphs.RemoveAll(h => h.ProfileId == destId);
         _config.BrioRecentMorphs.Insert(0, historyEntry);
         if (_config.BrioRecentMorphs.Count > 5)
@@ -694,7 +702,7 @@ public sealed class MorphEngine
     public bool StartBrioMorphFor(ushort actorIndex, Guid destId, string? mcdfOriginJson,
                                   float? speedOverride, MorphMode mode, EasingMode easing,
                                   MorphTargetMode targetMode = MorphTargetMode.FullProfile,
-                                  Guid? templateOwnerProfileId = null)
+                                  Guid? templateOwnerProfileId = null, Guid? easingCurveId = null)
     {
         var originJson = ResolveBrioOrigin(actorIndex, mcdfOriginJson, out string originSource);
 
@@ -723,9 +731,10 @@ public sealed class MorphEngine
             NetworkTargetName = null,
             SpeedOverride     = speedOverride,
         };
+        var resolvedCurve = easingCurveId is { } cid ? _config.CustomEasingCurves.Find(c => c.Id == cid) : null;
         TrySetupRootExternalisation(session, actorIndex);
         session.Controller.Start(actorIndex, originJObj, originBones, effectiveDestBones,
-                                 mode, easing, session.RootExternalised);
+                                 mode, easing, session.RootExternalised, resolvedCurve);
         _brio[actorIndex] = session;
 
         _log.Information($"[BodyFlux/Brio] actor={actorIndex} bones={session.Controller.BoneCount} origin={originSource}");
@@ -815,7 +824,7 @@ public sealed class MorphEngine
                 _log.Error($"[BodyFlux/Seq] '{step.ProfileName}' not found (ec={ec}); aborting sequence.");
                 return false;
             }
-            steps.Add(new SeqStep(destJson, speedOverride ?? step.Speed, step.Easing, step.TargetMode));
+            steps.Add(new SeqStep(destJson, speedOverride ?? step.Speed, step.Easing, step.TargetMode, step.EasingCurveId));
         }
 
         _player.SeqSteps          = steps;
@@ -893,7 +902,7 @@ public sealed class MorphEngine
                 _log.Error($"[BodyFlux/Seq] Profile '{step.ProfileName}' not found (ec={ec}); aborting sequence.");
                 return false;
             }
-            steps.Add(new SeqStep(destJson, step.Speed, step.Easing, step.TargetMode));
+            steps.Add(new SeqStep(destJson, step.Speed, step.Easing, step.TargetMode, step.EasingCurveId));
         }
 
         var session = new MorphSession
@@ -936,9 +945,10 @@ public sealed class MorphEngine
             : destJObj;
         s.SeqLastEffectiveJson = effectiveProfile.ToString(Newtonsoft.Json.Formatting.None);
 
+        var stepCurve = step.EasingCurveId is { } scid ? _config.CustomEasingCurves.Find(c => c.Id == scid) : null;
         s.SpeedOverride = step.Speed;
         s.Controller.Start(s.TargetIndex, originJObj, originBones, effectiveDestBones,
-                           MorphMode.Simple, step.Easing, s.RootExternalised);
+                           MorphMode.Simple, step.Easing, s.RootExternalised, stepCurve);
         if (s == _player)
             _sync.ResetSendThrottle();
     }
@@ -1000,7 +1010,8 @@ public sealed class MorphEngine
             }
             SelectedProfileIndex = idx;
         }
-        StartGrowth(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.OriginProfileId);
+        StartGrowth(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.OriginProfileId,
+                    preset.EasingCurveId);
         return true;
     }
 
@@ -1060,7 +1071,7 @@ public sealed class MorphEngine
             BrioOriginLabel = preset.OriginMcdfLabel ?? "";
         }
 
-        StartBrioMorph(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode);
+        StartBrioMorph(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.EasingCurveId);
     }
 
     /// <summary>Saves the current UI selection into preset slot <paramref name="slot"/> (0-based).</summary>
@@ -1092,7 +1103,8 @@ public sealed class MorphEngine
             _config.GrowthSpeed, _config.MorphMode, _config.EasingMode,
             TargetMode: _config.MorphTargetMode, TemplateOwnerProfileId: templateOwnerProfileId,
             OriginProfileId: _config.OriginProfileId,
-            OriginProfileName: _config.OriginProfileId is { } originId ? ResolveProfileName(originId) : null);
+            OriginProfileName: _config.OriginProfileId is { } originId ? ResolveProfileName(originId) : null,
+            EasingCurveId: _config.EasingCurveId);
         _config.Save();
     }
 
@@ -1143,7 +1155,8 @@ public sealed class MorphEngine
         _config.BrioPresets[slot] = new MorphPreset(id, name,
             _config.BrioGrowthSpeed, _config.MorphMode, _config.BrioEasingMode,
             _brioOriginJson, _brioOriginJson != null ? BrioOriginLabel : null,
-            actorName, actorIdx, _config.MorphTargetMode, templateOwnerProfileId);
+            actorName, actorIdx, _config.MorphTargetMode, templateOwnerProfileId,
+            EasingCurveId: _config.BrioEasingCurveId);
         _config.Save();
     }
 

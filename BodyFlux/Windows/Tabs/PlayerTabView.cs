@@ -308,10 +308,13 @@ public sealed class PlayerTabView
 
         using (ImRaii.Disabled(busy || plugin.IsPaused))
         {
-            int easingInt = (int)config.EasingMode;
-            if (UiHelpers.ButtonGroup("Easing", UiHelpers.EasingLabels, ref easingInt))
+            ImGui.SetNextItemWidth(200 * ImGuiHelpers.GlobalScale);
+            var mode = config.EasingMode;
+            var curveId = config.EasingCurveId;
+            if (UiHelpers.EasingCombo("##Easing", config, ref mode, ref curveId))
             {
-                config.EasingMode = (EasingMode)easingInt;
+                config.EasingMode    = mode;
+                config.EasingCurveId = curveId;
                 config.Save();
             }
         }
@@ -559,7 +562,7 @@ public sealed class PlayerTabView
             ImGui.SameLine();
             ImGui.TextUnformatted($"{UiHelpers.PresetOriginLabel(entry)} → {entry.ProfileName}");
             ImGui.SameLine();
-            ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing)}  {UiHelpers.TargetModeShort(entry.TargetMode)})");
+            ImGui.TextDisabled($"({entry.Speed:F2}/s  {UiHelpers.ModeShort(entry.Mode)}  {UiHelpers.EasingShort(entry.Easing, entry.EasingCurveId, config)}  {UiHelpers.TargetModeShort(entry.TargetMode)})");
         }
 
         if (toApply != null)
@@ -621,7 +624,7 @@ public sealed class PlayerTabView
             {
                 ImGui.TextUnformatted($"{UiHelpers.PresetOriginLabel(preset!)} → {preset!.ProfileName}");
                 ImGui.SameLine();
-                ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing)}  {UiHelpers.TargetModeShort(preset.TargetMode)})");
+                ImGui.TextDisabled($"({preset.Speed:F2}/s  {UiHelpers.ModeShort(preset.Mode)}  {UiHelpers.EasingShort(preset.Easing, preset.EasingCurveId, config)}  {UiHelpers.TargetModeShort(preset.TargetMode)})");
             }
             else
             {

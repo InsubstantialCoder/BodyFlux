@@ -176,7 +176,7 @@ internal static class Theme
     /// <c>(closeClicked, collapseToggled)</c>: the caller applies these (<c>IsOpen = false</c>, flip
     /// its own collapsed flag) since this method doesn't own that state.
     /// </returns>
-    public static (bool closeClicked, bool collapseToggled) DrawCustomTitleBar(
+    public static (bool closeClicked, bool collapseToggled, bool menuClicked) DrawCustomTitleBar(
         string title, string version, bool syncLive, int peerCount, bool collapsed, bool cpOk, bool brioOk)
     {
         var   drawList = ImGui.GetWindowDrawList();
@@ -190,9 +190,9 @@ internal static class Theme
         drawList.AddRectFilled(barMin, barMax, ImGui.GetColorU32(barBg), 16f, ImDrawFlags.RoundCornersTop);
         drawList.AddLine(new Vector2(barMin.X, barMax.Y), new Vector2(barMax.X, barMax.Y), ImGui.GetColorU32(Border));
 
-        // Both buttons' rects are needed up front, since the Sync badge lays out against the
-        // collapse button, and the drag zone below needs to stop short of both instead of
-        // overlapping them.
+        // All three buttons' rects are needed up front, since the Sync badge/status dots lay out
+        // against the leftmost of them (the menu button), and the drag zone below needs to stop
+        // short of the whole row instead of overlapping it.
         const float btnSize = 22f;
         const float btnGap  = 8f;
         const float edgePad = 14f;
@@ -200,11 +200,15 @@ internal static class Theme
         var closeMax    = closeMin + new Vector2(btnSize, btnSize);
         var collapseMin = new Vector2(closeMin.X - btnGap - btnSize, closeMin.Y);
         var collapseMax = collapseMin + new Vector2(btnSize, btnSize);
+        // Opens the Pin/Clickthrough/Opacity menu — the equivalent of Dalamud's native title-bar
+        // menu, which stopped drawing itself once this window switched to NoTitleBar (see MainWindow).
+        var menuMin     = new Vector2(collapseMin.X - btnGap - btnSize, closeMin.Y);
+        var menuMax     = menuMin + new Vector2(btnSize, btnSize);
 
         // Drag zone stops short of the button row instead of overlapping it: overlapping
         // InvisibleButtons made the close button unreliable to click (the drag zone could end up
         // owning the press), so the two no longer share any pixels at all.
-        float dragWidth = MathF.Max(0f, collapseMin.X - btnGap - barMin.X);
+        float dragWidth = MathF.Max(0f, menuMin.X - btnGap - barMin.X);
         ImGui.SetCursorScreenPos(barMin);
         ImGui.InvisibleButton("##titlebar_drag", new Vector2(dragWidth, TitleBarHeight));
         if (ImGui.IsItemActive() && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
@@ -238,16 +242,25 @@ internal static class Theme
         var versionPos = new Vector2(textX + titleSize.X + 8f, barMin.Y + (TitleBarHeight - ImGui.GetFontSize()) / 2f);
         drawList.AddText(versionPos, ImGui.GetColorU32(TextMuted), version);
 
-        // ── Sync badge, right-aligned against the collapse button, not a guessed gap ──
-        float rightEdge = collapseMin.X - 14f;
+        // ── Dependency status dots (Customize+, Brio), right-aligned against the button row —
+        //    replacing the per-tab banners Player and Gpose each used to draw for the same two checks ──
+        float rightEdge = menuMin.X - 14f;
+        var brioDotCenter = new Vector2(rightEdge - 4f, barMin.Y + TitleBarHeight / 2f);
+        DrawTitleBarStatusDot(drawList, brioDotCenter, brioOk, brioOk ? "Brio enabled" : "Brio not detected");
+
+        var cpDotCenter = new Vector2(brioDotCenter.X - 16f, brioDotCenter.Y);
+        DrawTitleBarStatusDot(drawList, cpDotCenter, cpOk, cpOk ? "Customize+ enabled" : "Customize+ not detected");
+
+        // ── Sync badge, sitting left of the dependency dots (not between them and the buttons) ──
         if (syncLive)
         {
             string text     = $"SYNC · {peerCount}";
             var    textSize = ImGui.CalcTextSize(text);
             float  height   = 22f;
             float  pillW    = textSize.X + 24f;
-            var    max      = new Vector2(rightEdge, barMin.Y + (TitleBarHeight + height) / 2f);
-            var    min      = new Vector2(max.X - pillW, barMin.Y + (TitleBarHeight - height) / 2f);
+            float  badgeRight = cpDotCenter.X - 12f;
+            var    max      = new Vector2(badgeRight, barMin.Y + (TitleBarHeight + height) / 2f);
+            var    min       = new Vector2(max.X - pillW, barMin.Y + (TitleBarHeight - height) / 2f);
 
             uint badgeBg     = ImGui.GetColorU32(new Vector4(Accent2.X, Accent2.Y, Accent2.Z, 0.18f));
             uint badgeBorder = ImGui.GetColorU32(new Vector4(Accent2.X, Accent2.Y, Accent2.Z, 0.45f));
@@ -259,17 +272,24 @@ internal static class Theme
 
             var textPos = new Vector2(dotCenter.X + 8f, min.Y + (height - textSize.Y) / 2f);
             drawList.AddText(textPos, ImGui.GetColorU32(Accent2), text);
-
-            rightEdge = min.X - 14f;
         }
 
-        // ── Dependency status dots (Customize+, Brio), replacing the per-tab banners Player and
-        //    Gpose each used to draw for the same two checks ──────────────────────
-        var brioDotCenter = new Vector2(rightEdge - 4f, barMin.Y + TitleBarHeight / 2f);
-        DrawTitleBarStatusDot(drawList, brioDotCenter, brioOk, brioOk ? "Brio enabled" : "Brio not detected");
+        // ── Menu button (three dashes) — opens the Pin/Clickthrough/Opacity menu ────
+        ImGui.SetCursorScreenPos(menuMin);
+        bool menuClicked  = ImGui.InvisibleButton("##titlebar_menu", new Vector2(btnSize, btnSize));
+        bool menuHovered  = ImGui.IsItemHovered();
 
-        var cpDotCenter = new Vector2(brioDotCenter.X - 16f, brioDotCenter.Y);
-        DrawTitleBarStatusDot(drawList, cpDotCenter, cpOk, cpOk ? "Customize+ enabled" : "Customize+ not detected");
+        if (menuHovered)
+            drawList.AddCircleFilled((menuMin + menuMax) / 2f, btnSize / 2f, ImGui.GetColorU32(PanelBgHover));
+
+        var  menuCenter = (menuMin + menuMax) / 2f;
+        uint menuCol     = ImGui.GetColorU32(TextMuted);
+        const float dashW = 5.5f, dashGap = 3.5f;
+        for (int i = -1; i <= 1; i++)
+        {
+            float y = menuCenter.Y + i * dashGap;
+            drawList.AddLine(new Vector2(menuCenter.X - dashW, y), new Vector2(menuCenter.X + dashW, y), menuCol, 1.5f);
+        }
 
         // ── Collapse chevron, points down to collapse, up to expand ────────────
         ImGui.SetCursorScreenPos(collapseMin);
@@ -303,10 +323,13 @@ internal static class Theme
         drawList.AddLine(closeMin + new Vector2(xPad, xPad), closeMax - new Vector2(xPad, xPad), xCol, 1.7f);
         drawList.AddLine(new Vector2(closeMax.X - xPad, closeMin.Y + xPad), new Vector2(closeMin.X + xPad, closeMax.Y - xPad), xCol, 1.7f);
 
-        // Hand the cursor back to normal window-content flow, below the whole bar.
-        ImGui.SetCursorScreenPos(new Vector2(winPos.X, barMax.Y + 1f));
+        // Hand the cursor back to normal window-content flow, below the whole bar. Inset by the
+        // active WindowPadding (not the raw window edge) so the tab bar and everything after it
+        // actually get the padding pushed in MainWindow.PreDraw, the same as content elsewhere.
+        var contentPad = ImGui.GetStyle().WindowPadding;
+        ImGui.SetCursorScreenPos(new Vector2(winPos.X + contentPad.X, barMax.Y + 1f));
 
-        return (closeClicked, collapseClicked);
+        return (closeClicked, collapseClicked, menuClicked);
     }
 
     /// <summary>A small colored dot with a hover tooltip, no visible label, since the title bar is too narrow for a full text status line.</summary>

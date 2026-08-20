@@ -37,4 +37,5 @@ public record MorphPreset(
     MorphTargetMode TargetMode  = MorphTargetMode.FullProfile,
     Guid?      TemplateOwnerProfileId = null,
     Guid?      OriginProfileId  = null,
-    string?    OriginProfileName = null);
+    string?    OriginProfileName = null,
+    Guid?      EasingCurveId    = null);

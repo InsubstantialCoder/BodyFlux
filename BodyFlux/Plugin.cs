@@ -276,8 +276,9 @@ public sealed class Plugin : IDalamudPlugin
     public List<(ushort Index, string Name)> GetGPoseActors()        => Morph.GetGPoseActors();
 
     public void StartGrowth(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
-                            MorphTargetMode? targetModeOverride = null)
-        => Morph.StartGrowth(speedOverride, modeOverride, easingOverride, targetModeOverride);
+                            MorphTargetMode? targetModeOverride = null, Guid? easingCurveIdOverride = null)
+        => Morph.StartGrowth(speedOverride, modeOverride, easingOverride, targetModeOverride,
+                             easingCurveIdOverride: easingCurveIdOverride);
 
     public void PauseGrowth()   => Morph.PauseGrowth();
     public void ResumeGrowth()  => Morph.ResumeGrowth();
@@ -291,14 +292,15 @@ public sealed class Plugin : IDalamudPlugin
     public void   StopGaugeMorph() => Morph.StopGaugeMorph();
 
     public void StartBrioMorph(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
-                               MorphTargetMode? targetModeOverride = null)
-        => Morph.StartBrioMorph(speedOverride, modeOverride, easingOverride, targetModeOverride);
+                               MorphTargetMode? targetModeOverride = null, Guid? easingCurveIdOverride = null)
+        => Morph.StartBrioMorph(speedOverride, modeOverride, easingOverride, targetModeOverride, easingCurveIdOverride);
 
     public bool StartBrioMorphFor(ushort actorIndex, Guid destId, string? mcdfOriginJson,
                                   float? speedOverride, MorphMode mode, EasingMode easing,
                                   MorphTargetMode targetMode = MorphTargetMode.FullProfile,
-                                  Guid? templateOwnerProfileId = null)
-        => Morph.StartBrioMorphFor(actorIndex, destId, mcdfOriginJson, speedOverride, mode, easing, targetMode, templateOwnerProfileId);
+                                  Guid? templateOwnerProfileId = null, Guid? easingCurveId = null)
+        => Morph.StartBrioMorphFor(actorIndex, destId, mcdfOriginJson, speedOverride, mode, easing, targetMode,
+                                   templateOwnerProfileId, easingCurveId);
 
     public void PauseBrioActor(ushort index)   => Morph.PauseBrioActor(index);
     public void ResumeBrioActor(ushort index)  => Morph.ResumeBrioActor(index);

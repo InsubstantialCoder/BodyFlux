@@ -17,9 +17,7 @@ internal static class UiHelpers
     // Shared between Player and Brio's Single tabs, same choices, same ButtonGroup rows.
     public static readonly string[] MorphTargetLabels = ["Full Profile", "Template Overlay"];
     public static readonly string[] MorphModeLabels    = ["Simple", "Loop (x1)", "Loop (∞)"];
-    public static readonly string[] EasingLabels        = ["Linear", "Ease In", "Ease Out", "Ease In-Out"];
-
-    /// <summary>Display names indexed by <c>(int)</c><see cref="EasingMode"/> — used by easing combos.</summary>
+    /// <summary>Display names indexed by <c>(int)</c><see cref="EasingMode"/> — used by <see cref="EasingCombo"/>.</summary>
     public static readonly string[] EasingNames = ["Linear", "Ease In", "Ease Out", "Ease In-Out"];
 
     public static string ModeShort(MorphMode m) => m switch
@@ -36,6 +34,66 @@ internal static class UiHelpers
         EasingMode.EaseInOut => "In-Out",
         _                    => "Linear"
     };
+
+    /// <summary>
+    /// Overload of <see cref="EasingShort(EasingMode)"/> for a preset/history row that may carry a
+    /// custom curve reference: returns the curve's name when <paramref name="curveId"/> resolves,
+    /// <c>"(deleted curve)"</c> if it's set but no longer found (mirrors <see cref="PresetOriginLabel"/>'s
+    /// "(deleted profile)" fallback), else falls back to the plain built-in short label.
+    /// </summary>
+    public static string EasingShort(EasingMode mode, Guid? curveId, Configuration config) => curveId switch
+    {
+        null => EasingShort(mode),
+        { } id => config.CustomEasingCurves.Find(c => c.Id == id) is { } curve ? $"Custom: {curve.Name}" : "(deleted curve)",
+    };
+
+    /// <summary>
+    /// Combo listing the 4 built-in <see cref="EasingMode"/> values plus every saved custom curve
+    /// (a separator between the two groups, omitted entirely when there are no custom curves yet —
+    /// so it looks identical to a plain built-in combo until the user has saved one). Picking a
+    /// built-in clears <paramref name="curveId"/>; picking a custom curve leaves
+    /// <paramref name="mode"/> untouched (it's just the "last built-in" the picker remembers) and
+    /// sets <paramref name="curveId"/>.
+    /// </summary>
+    public static bool EasingCombo(string comboId, Configuration config, ref EasingMode mode, ref Guid? curveId)
+    {
+        string preview = curveId is { } cid
+            ? (config.CustomEasingCurves.Find(c => c.Id == cid) is { } found ? $"Custom: {found.Name}" : "(deleted curve)")
+            : EasingNames[(int)mode];
+
+        bool changed = false;
+        if (!ImGui.BeginCombo(comboId, preview)) return false;
+
+        for (int i = 0; i < EasingNames.Length; i++)
+        {
+            bool sel = curveId == null && (int)mode == i;
+            if (ImGui.Selectable(EasingNames[i], sel))
+            {
+                mode = (EasingMode)i;
+                curveId = null;
+                changed = true;
+            }
+            if (sel) ImGui.SetItemDefaultFocus();
+        }
+
+        if (config.CustomEasingCurves.Count > 0)
+        {
+            ImGui.Separator();
+            foreach (var curve in config.CustomEasingCurves)
+            {
+                bool sel = curveId == curve.Id;
+                if (ImGui.Selectable($"Custom: {curve.Name}", sel))
+                {
+                    curveId = curve.Id;
+                    changed = true;
+                }
+                if (sel) ImGui.SetItemDefaultFocus();
+            }
+        }
+
+        ImGui.EndCombo();
+        return changed;
+    }
 
     public static string TargetModeShort(MorphTargetMode m) => m switch
     {
