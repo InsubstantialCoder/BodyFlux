@@ -51,8 +51,10 @@ public sealed class SyncManager : IDisposable
     // ── Consent state (sender side) ────────────────────────────────────────────
     // Keyed by opaque peer id of the target we requested consent from.
     private readonly Dictionary<string, ConsentStatus> _consentStatus = new();
-    // Called once when consent is granted so the morph can start automatically.
-    private Action? _onConsentGranted;
+    // Called once when that specific target's consent is granted, so the morph can start
+    // automatically. Keyed per target (not a single shared callback) so requesting several peers
+    // at once doesn't have a later request's callback clobber an earlier one still pending.
+    private readonly Dictionary<string, Action> _onConsentGrantedByTarget = new();
 
     // ── Incoming consent requests (receiver side) ──────────────────────────────
     // Each entry is the opaque peer id + display name of the requester.
@@ -209,7 +211,8 @@ public sealed class SyncManager : IDisposable
         if (_net == null) return;
         var id = PeerIdentity.Of(targetName, _config.PairKey);
         _consentStatus[id] = ConsentStatus.Pending;
-        _onConsentGranted  = onGranted;
+        if (onGranted != null) _onConsentGrantedByTarget[id] = onGranted;
+        else _onConsentGrantedByTarget.Remove(id);
 
 #if DEBUG
         if (_debugPeers.Contains(targetName))
@@ -344,7 +347,7 @@ public sealed class SyncManager : IDisposable
         _incomingRequests.Clear();
         _grantedTo.Clear();
         _promptCooldown.Clear();
-        _onConsentGranted = null;
+        _onConsentGrantedByTarget.Clear();
 #if DEBUG
         _debugConsentGrantAt.Clear();
 #endif
@@ -442,7 +445,7 @@ public sealed class SyncManager : IDisposable
             _incomingRequests.Clear();
             _grantedTo.Clear();
             _promptCooldown.Clear();
-            _onConsentGranted = null;
+            _onConsentGrantedByTarget.Clear();
 #if DEBUG
             _debugConsentGrantAt.Clear();
 #endif
@@ -472,9 +475,7 @@ public sealed class SyncManager : IDisposable
                 if (now < at) continue;
                 _debugConsentGrantAt.Remove(id);
                 _consentStatus[id] = ConsentStatus.Granted;
-                var cb = _onConsentGranted;
-                _onConsentGranted = null;
-                cb?.Invoke();
+                if (_onConsentGrantedByTarget.Remove(id, out var cb)) cb.Invoke();
             }
         }
 #endif
@@ -528,8 +529,7 @@ public sealed class SyncManager : IDisposable
                 }
                 // Peer disconnected — clear sender-side consent so we request again on reconnect.
                 _consentStatus.Remove(targetId);
-                if (_onConsentGranted != null && _consentStatus.Count == 0)
-                    _onConsentGranted = null;
+                _onConsentGrantedByTarget.Remove(targetId);
                 // Clear any queued incoming request from this peer, plus the grant and deny
                 // cooldown we were holding for them — a reconnecting peer starts from scratch.
                 _incomingRequests.RemoveAll(r => r.PeerId == targetId);
@@ -560,15 +560,13 @@ public sealed class SyncManager : IDisposable
                 string who = names.GetValueOrDefault(consent.SenderId)
                           ?? PeerIdentity.Short(consent.SenderId);
                 _chat.Print($"[BodyFlux] {who} accepted your morph request.");
-                // Fire the auto-start callback if one was registered.
-                var cb = _onConsentGranted;
-                _onConsentGranted = null;
-                cb?.Invoke();
+                // Fire that target's auto-start callback if one was registered.
+                if (_onConsentGrantedByTarget.Remove(consent.SenderId, out var cb)) cb.Invoke();
             }
             else
             {
                 _consentStatus[consent.SenderId] = ConsentStatus.Idle;
-                _onConsentGranted = null;
+                _onConsentGrantedByTarget.Remove(consent.SenderId);
                 var names = BuildIdToNameMap();
                 string who = names.GetValueOrDefault(consent.SenderId)
                           ?? PeerIdentity.Short(consent.SenderId);
@@ -717,7 +715,7 @@ public sealed class SyncManager : IDisposable
         _incomingRequests.Clear();
         _grantedTo.Clear();
         _promptCooldown.Clear();
-        _onConsentGranted = null;
+        _onConsentGrantedByTarget.Clear();
 #if DEBUG
         _debugConsentGrantAt.Clear();
 #endif

@@ -28,8 +28,13 @@ public sealed class MorphEngine
     private readonly IChatGui                          _chat;
     private readonly IPluginLog                        _log;
 
-    private readonly MorphSession                      _player = new();
-    private readonly Dictionary<ushort, MorphSession>  _brio   = [];
+    private readonly MorphSession                      _player  = new();
+    private readonly Dictionary<ushort, MorphSession>  _brio    = [];
+    // One independent session per network target, keyed by peer display name — the same trick as
+    // _brio, so several connected peers can be morphed simultaneously instead of sharing the single
+    // _player session (which stays reserved for self-morphs and the classic one-peer TargetPlayerName
+    // flow via StartGrowth).
+    private readonly Dictionary<string, MorphSession>  _network = [];
 
     // True pre-morph model scale per externalised actor, kept across chained morphs (so starting a
     // new morph before resetting does not capture the previous morph's inflated scale as "original").
@@ -100,6 +105,14 @@ public sealed class MorphEngine
         return list;
     }
 
+    // ── Network target state ──────────────────────────────────────────────────
+    // Mirrors the Brio actor state above, but keyed by peer name instead of Brio actor index — one
+    // independent morph session per connected peer, driven from the Sync tab's target grid.
+
+    public bool  IsNetworkTargetActive(string name)    => _network.ContainsKey(name);
+    public float GetNetworkTargetProgress(string name) =>
+        _network.TryGetValue(name, out var s) ? s.Controller.Progress : 0f;
+
     // ── Construction ──────────────────────────────────────────────────────────
 
     public MorphEngine(
@@ -151,13 +164,7 @@ public sealed class MorphEngine
             ResetSession(_player, isPlayer: true);
         }
 
-        // For a completed remote-target morph (progress hit 1.0, IsMorphing stopped), keep
-        // re-applying the final morphed profile each tick. The SyncManager's peer-interp is
-        // continuously fed the target's own base-profile broadcasts and would otherwise
-        // overwrite the temp profile and snap the target back to unmorhped on the applier's screen.
-        if (!_player.Controller.IsMorphing && !_player.Resetting
-            && _player.NetworkTargetName != null && _player.CompletedRemoteJson != null)
-            _ipc.SetTempProfile(_player.TargetIndex, _player.CompletedRemoteJson);
+        MaintainCompletedRemoteMorph(_player);
 
         if (_brio.Count > 0)
             foreach (var s in _brio.Values)
@@ -167,6 +174,28 @@ public sealed class MorphEngine
                     TickGaugeSession(s, seconds, bres, broadcast: false);
                 else if (s.Controller.IsMorphing)
                     TickSession(s, seconds, _config.BrioGrowthSpeed, broadcast: false);
+
+        if (_network.Count > 0)
+            foreach (var s in _network.Values)
+            {
+                if (s.Controller.IsMorphing)
+                    TickSession(s, seconds, _config.GrowthSpeed, broadcast: true);
+                MaintainCompletedRemoteMorph(s);
+            }
+    }
+
+    /// <summary>
+    /// For a completed remote-target morph (progress hit 1.0, IsMorphing stopped), keep re-applying
+    /// the final morphed profile each tick. The SyncManager's peer-interp is continuously fed the
+    /// target's own base-profile broadcasts and would otherwise overwrite the temp profile and snap
+    /// the target back to unmorphed on the applier's screen. Shared by the classic single-target
+    /// session and every network-multi-target session, since both use the same completion pattern.
+    /// </summary>
+    private void MaintainCompletedRemoteMorph(MorphSession s)
+    {
+        if (!s.Controller.IsMorphing && !s.Resetting
+            && s.NetworkTargetName != null && s.CompletedRemoteJson != null)
+            _ipc.SetTempProfile(s.TargetIndex, s.CompletedRemoteJson);
     }
 
     /// <summary>
@@ -763,6 +792,116 @@ public sealed class MorphEngine
         _brio.Keys.CopyTo(indices, 0);
         foreach (var idx in indices)
             ResetBrioActor(idx);
+    }
+
+    // ── Network (Sync) morph controls ─────────────────────────────────────────
+    // One independent session per connected peer, driven from the Sync tab's target grid — the
+    // network-target equivalent of the Brio Multi controls just above. Assumes consent for
+    // targetName was already Granted by the time this is called (the UI only shows "Apply" once
+    // it is); it consumes that consent here the same way the classic StartGrowth does.
+
+    /// <summary>
+    /// Starts (or replaces) a morph on one connected, consenting peer with fully explicit config —
+    /// the engine behind both a card's own Apply and the Sync tab's "Apply All". Returns false if
+    /// the peer can't currently be targeted (not connected/consenting/nearby) or the destination
+    /// couldn't be read.
+    /// </summary>
+    public bool StartNetworkMorphFor(string targetName, Guid destId, float speedOverride,
+                                     MorphMode mode, EasingMode easing,
+                                     MorphTargetMode targetMode = MorphTargetMode.FullProfile,
+                                     Guid? templateOwnerProfileId = null, Guid? easingCurveId = null)
+    {
+        if (TargetPlayerName == targetName)
+        {
+            _log.Warning($"[BodyFlux/Sync] '{targetName}' is already the classic Target Actor — " +
+                         "reset that session first before driving them from the Sync grid.");
+            return false;
+        }
+        if (!_sync.IsConnected)
+        {
+            _chat.PrintError("[BodyFlux] Network Sync must be active to morph other players.");
+            return false;
+        }
+        if (!_sync.IsConsentingPeer(targetName))
+        {
+            _chat.PrintError($"[BodyFlux] '{targetName}' has not enabled remote morphing or is " +
+                             "not connected with the same Sync Key.");
+            return false;
+        }
+        var found = FindCharacterIndex(targetName);
+        if (found == null)
+        {
+            _chat.PrintError($"[BodyFlux] Cannot find '{targetName}' nearby.");
+            return false;
+        }
+        ushort targetIndex = found.Value;
+
+        string? originJson = null;
+        if (_sync.TryGetPeerBaseProfile(targetName, out var peerBase) && !string.IsNullOrEmpty(peerBase))
+            originJson = peerBase;
+        else
+            _log.Warning($"[BodyFlux/Sync] '{targetName}' hasn't shared their base scaling yet; " +
+                         "morphing from identity. Their appearance may not restore correctly on Reset.");
+
+        var (ec, destJson) = targetMode == MorphTargetMode.TemplateOverlay
+            ? _ipc.GetTemplate(templateOwnerProfileId ?? Guid.Empty, destId)
+            : _ipc.GetProfile(destId);
+        if (ec != 0 || destJson == null)
+        {
+            _log.Error($"[BodyFlux/Sync] Fetching morph destination failed (ec={ec}).");
+            return false;
+        }
+
+        var originJObj  = originJson != null ? JObject.Parse(originJson) : new JObject();
+        var destJObj    = JObject.Parse(destJson);
+        var originBones = originJObj["Bones"] as JObject ?? new JObject();
+        var destBones   = destJObj  ["Bones"] as JObject ?? new JObject();
+
+        var effectiveDestBones = targetMode == MorphTargetMode.TemplateOverlay
+            ? BoneJsonHelper.BuildOverlayDestination(originBones, destBones)
+            : destBones;
+
+        var session = new MorphSession
+        {
+            TargetIndex       = targetIndex,
+            OriginProfileJson = originJson,
+            NetworkTargetName = targetName,
+            SpeedOverride     = speedOverride,
+        };
+        var resolvedCurve = easingCurveId is { } cid ? _config.CustomEasingCurves.Find(c => c.Id == cid) : null;
+        TrySetupRootExternalisation(session, targetIndex);
+        session.Controller.Start(targetIndex, originJObj, originBones, effectiveDestBones,
+                                 mode, easing, session.RootExternalised, resolvedCurve);
+        _network[targetName] = session;
+
+        _sync.ConsumeConsent(targetName);
+
+        _log.Information($"[BodyFlux/Sync] target='{targetName}' bones={session.Controller.BoneCount}");
+        return true;
+    }
+
+    public void PauseNetworkTarget(string name)   { if (_network.TryGetValue(name, out var s)) s.Controller.Pause(); }
+    public void ResumeNetworkTarget(string name)  { if (_network.TryGetValue(name, out var s)) s.Controller.Resume(); }
+    public void ReverseNetworkTarget(string name) { if (_network.TryGetValue(name, out var s)) s.Controller.Reverse(); }
+
+    public void PauseAllNetworkTargets()   { foreach (var s in _network.Values) s.Controller.Pause(); }
+    public void ResumeAllNetworkTargets()  { foreach (var s in _network.Values) s.Controller.Resume(); }
+    public void ReverseAllNetworkTargets() { foreach (var s in _network.Values) s.Controller.Reverse(); }
+
+    public void ResetNetworkTarget(string name)
+    {
+        if (!_network.TryGetValue(name, out var s)) return;
+        ResetSession(s, isPlayer: true); // isPlayer really means "send a Sync stop/restore frame"
+        _network.Remove(name);
+    }
+
+    public void ResetAllNetworkTargets()
+    {
+        if (_network.Count == 0) return;
+        var names = new string[_network.Count];
+        _network.Keys.CopyTo(names, 0);
+        foreach (var name in names)
+            ResetNetworkTarget(name);
     }
 
     // ── Sequence playback ─────────────────────────────────────────────────────

@@ -10,6 +10,14 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 8, 0, 0), "Multi-Target Sync Morphing",
+        [
+            "Each connected, consenting peer in the Sync tab's grid now has its own morph config " +
+                "(destination, speed, mode, easing) and its own Apply, so several peers can be " +
+                "set up independently and applied at the same time.",
+            "Added Apply All to morph every configured peer at once, plus Pause All, Resume All, " +
+                "Reverse All and Reset All to control every active Sync morph together.",
+        ]),
         new ChangelogEntry(new Version(0, 7, 2, 0), "Sync Tab Update",
         [
             "Minor UI changes to Sync Tab.",

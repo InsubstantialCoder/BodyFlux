@@ -111,6 +111,37 @@ public sealed class Plugin : IDalamudPlugin
 
     public List<MorphEngine.BrioMorphState> GetActiveBrioMorphs() => Morph.GetActiveBrioMorphs();
 
+    // Network (Sync) target state — the multi-target equivalent of the Brio actor state above,
+    // one independent session per connected peer driven from the Sync tab's target grid.
+    public bool  IsNetworkTargetActive(string name)    => Morph.IsNetworkTargetActive(name);
+    public float GetNetworkTargetProgress(string name) => Morph.GetNetworkTargetProgress(name);
+
+    public bool StartNetworkMorphFor(string targetName, Guid destId, float speed, MorphMode mode,
+        EasingMode easing, MorphTargetMode targetMode, Guid? templateOwnerProfileId, Guid? easingCurveId)
+        => Morph.StartNetworkMorphFor(targetName, destId, speed, mode, easing, targetMode,
+                                       templateOwnerProfileId, easingCurveId);
+
+    /// <summary>
+    /// Requests consent from a connected peer, then automatically starts the morph with this exact
+    /// config once granted. The config is snapshotted into the callback now, at Request time, so
+    /// editing the card afterward (before the peer responds) can't change what actually applies.
+    /// </summary>
+    public void RequestNetworkMorphConsent(string targetName, Guid destId, float speed, MorphMode mode,
+        EasingMode easing, MorphTargetMode targetMode, Guid? templateOwnerProfileId, Guid? easingCurveId)
+        => Sync.RequestConsent(targetName, onGranted: () =>
+            Morph.StartNetworkMorphFor(targetName, destId, speed, mode, easing, targetMode,
+                                        templateOwnerProfileId, easingCurveId));
+
+    public void PauseNetworkTarget(string name)   => Morph.PauseNetworkTarget(name);
+    public void ResumeNetworkTarget(string name)  => Morph.ResumeNetworkTarget(name);
+    public void ReverseNetworkTarget(string name) => Morph.ReverseNetworkTarget(name);
+    public void ResetNetworkTarget(string name)   => Morph.ResetNetworkTarget(name);
+
+    public void PauseAllNetworkTargets()   => Morph.PauseAllNetworkTargets();
+    public void ResumeAllNetworkTargets()  => Morph.ResumeAllNetworkTargets();
+    public void ReverseAllNetworkTargets() => Morph.ReverseAllNetworkTargets();
+    public void ResetAllNetworkTargets()   => Morph.ResetAllNetworkTargets();
+
     // ── Dalamud-only properties ───────────────────────────────────────────────
 
     /// <summary>True while the game's Group Pose (GPose) mode is active.</summary>
@@ -266,11 +297,12 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>(Re)creates the network connection from current config.</summary>
     public void ApplyNetworkSyncConfig() => Sync.ApplyConfig();
 
-    /// <summary>Disconnects and clears any pending targeted morph.</summary>
+    /// <summary>Disconnects and clears any pending targeted morph (classic and multi-target alike).</summary>
     public void DisconnectNetworkSync()
     {
         Sync.Disconnect();
         TargetPlayerName = null;
+        Morph.ResetAllNetworkTargets();
     }
 
     // ── Morph engine facade ───────────────────────────────────────────────────

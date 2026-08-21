@@ -249,10 +249,16 @@ internal static class UiHelpers
     /// rather than clipping. Wrap the call in <c>ImRaii.Disabled</c> at the call site, same as the
     /// RadioButton rows it replaces.
     /// </summary>
-    public static bool ButtonGroup(string idPrefix, IReadOnlyList<string> labels, ref int selected)
+    /// <param name="maxWidth">
+    /// Overrides the row width the group flexes/wraps against. Needed inside a <see cref="Card"/>,
+    /// where the raw content region extends past the card's own right inset (only one side of that
+    /// inset is reflected by <c>Indent</c>) — pass the card's <c>innerWidth</c> (adjusted for
+    /// whatever a preceding same-line label already consumed) there instead of leaving this null.
+    /// </param>
+    public static bool ButtonGroup(string idPrefix, IReadOnlyList<string> labels, ref int selected, float? maxWidth = null)
     {
         bool  changed   = false;
-        float avail     = ImGui.GetContentRegionAvail().X;
+        float avail     = maxWidth ?? ImGui.GetContentRegionAvail().X;
         float spacing   = ImGui.GetStyle().ItemSpacing.X;
         float framePadX = ImGui.GetStyle().FramePadding.X;
 

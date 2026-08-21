@@ -1,28 +1,46 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
+using BodyFlux.Morph;
 using BodyFlux.Services;
 
 namespace BodyFlux.Windows.Tabs;
 
 /// <summary>
-/// Renders the "Sync" tab: the group Sync Key, the remote-morph consent toggle,
-/// connection controls, status, and the list of connected peers.
+/// Renders the "Sync" tab: the group Sync Key, the remote-morph consent toggle, connection
+/// controls, status, and a grid of connected peers each with their own morph config and Apply,
+/// so several peers can be morphed at once (plus a general Apply All / Pause All / etc. row).
 /// </summary>
 public sealed class SyncTabView
 {
-    private readonly Plugin  plugin;
-    private readonly Action? onSelectTarget; // asks MainWindow to focus the Player tab
+    private readonly Plugin plugin;
 
-    public SyncTabView(Plugin plugin, Action? onSelectTarget = null)
+    // One configurable entry per connected peer, created lazily the first time that peer's name is
+    // seen (unlike Brio's Multi tab, peers aren't manually added — they come from ConsentingPeers).
+    private sealed class TargetConfig
     {
-        this.plugin        = plugin;
-        this.onSelectTarget = onSelectTarget;
+        public int             DestIndex     = -1; // index into SavedProfiles
+        public int             TemplateIndex = -1; // index into SavedTemplates (TargetMode == TemplateOverlay)
+        public MorphTargetMode TargetMode = MorphTargetMode.FullProfile;
+        public float           Speed;
+        public MorphMode       Mode   = MorphMode.Simple;
+        public EasingMode      Easing = EasingMode.Linear;
+        public Guid?           EasingCurveId;
     }
+    private readonly Dictionary<string, TargetConfig> _targetConfigs = new();
+    private string _targetProfileFilter = ""; // shared filter for every card's destination picker
+
+    // Short target labels so the ButtonGroup fits on the SectionLabel's line inside a compact card
+    // (mirrors BrioTabView's GroupTargetLabels).
+    private static readonly string[] TargetModeLabels = ["Full", "Overlay"];
+
+    public SyncTabView(Plugin plugin) => this.plugin = plugin;
 
     private static string GeneratePairKey()
     {
@@ -177,8 +195,8 @@ public sealed class SyncTabView
         if (maxPeers.HasValue)
             ImGui.TextDisabled($"Up to {maxPeers} players can share the same Sync Key simultaneously.");
         UiHelpers.SectionLabel("Connected Users:",
-            "Quick-select a connected, consenting peer as your Target Actor. Configuring and " +
-            "applying the morph itself still happens from the Player tab's Single sub-tab.");
+            "Configure a destination, speed, mode and easing for each connected, consenting peer, " +
+            "then Request that card on its own or use Request All below to ask several at once.");
         ImGui.Spacing();
 
 #if DEBUG
@@ -218,47 +236,212 @@ public sealed class SyncTabView
             return;
         }
 
-        bool busy = plugin.IsMorphing || plugin.IsPaused;
-
-        using var table = ImRaii.Table("##SyncTargetGrid", 2);
-        if (!table) return;
-
-        ImGui.TableSetupColumn("##a", ImGuiTableColumnFlags.WidthStretch, 1f);
-        ImGui.TableSetupColumn("##b", ImGuiTableColumnFlags.WidthStretch, 1f);
-
-        foreach (var peer in targets)
+        // Extra cell padding so each card gets breathing room from its neighbor, from the tab's own
+        // right edge, and from the row below it (the card's own internal pad alone, see
+        // UiHelpers.Card, wasn't enough once it sat inside a table cell with barely any padding of
+        // its own — vertical padding matters here too since peers wrap to a new grid row).
+        using (ImRaii.PushStyle(ImGuiStyleVar.CellPadding,
+                   new Vector2(10 * ImGuiHelpers.GlobalScale, 8 * ImGuiHelpers.GlobalScale)))
+        using (var table = ImRaii.Table("##SyncTargetGrid", 2))
         {
-            ImGui.TableNextColumn();
-            ImGui.PushID(peer);
-            UiHelpers.Card(innerWidth => DrawTargetCard(peer, innerWidth, busy));
-            ImGui.PopID();
+            if (table)
+            {
+                ImGui.TableSetupColumn("##a", ImGuiTableColumnFlags.WidthStretch, 1f);
+                ImGui.TableSetupColumn("##b", ImGuiTableColumnFlags.WidthStretch, 1f);
+
+                foreach (var peer in targets)
+                {
+                    var cfg = GetOrCreateConfig(peer);
+                    ImGui.TableNextColumn();
+                    ImGui.PushID(peer);
+                    UiHelpers.Card(innerWidth => DrawTargetCard(peer, cfg, innerWidth));
+                    ImGui.PopID();
+                }
+            }
+        }
+
+        ImGui.Spacing();
+        DrawAllControlsRow(targets);
+    }
+
+    private TargetConfig GetOrCreateConfig(string peerName)
+    {
+        if (_targetConfigs.TryGetValue(peerName, out var cfg)) return cfg;
+        cfg = new TargetConfig { Speed = plugin.Configuration.GrowthSpeed };
+        _targetConfigs[peerName] = cfg;
+        return cfg;
+    }
+
+    private static bool HasValidDestination(Plugin plugin, TargetConfig cfg) => cfg.TargetMode == MorphTargetMode.TemplateOverlay
+        ? cfg.TemplateIndex >= 0 && cfg.TemplateIndex < plugin.SavedTemplates.Count
+        : cfg.DestIndex     >= 0 && cfg.DestIndex     < plugin.SavedProfiles.Count;
+
+    /// <summary>Draws one peer's config editor (mirrors BrioTabView's Group row) plus its own
+    /// consent-gated Request/Waiting/Apply button and a live progress bar while it's active.</summary>
+    private void DrawTargetCard(string peerName, TargetConfig cfg, float innerWidth)
+    {
+        float scale = ImGuiHelpers.GlobalScale;
+        // GetContentRegionAvail() inside a Card reports width against the raw cell edge, not the
+        // card's own right inset (Indent only accounts for the left side of Card's padding), so any
+        // "rest of the row" width for a same-line widget must be measured from innerWidth instead —
+        // otherwise it draws flush against the card's border. leftX anchors that measurement.
+        float leftX = ImGui.GetCursorPosX();
+        float Remaining() => innerWidth - (ImGui.GetCursorPosX() - leftX);
+
+        ImGui.TextUnformatted(peerName);
+
+        // ── Target mode ────────────────────────────────────────────────────────
+        UiHelpers.SectionLabel("Target:", null);
+        ImGui.SameLine();
+        int targetModeInt = (int)cfg.TargetMode;
+        if (UiHelpers.ButtonGroup("tgt", TargetModeLabels, ref targetModeInt, Remaining()))
+            cfg.TargetMode = (MorphTargetMode)targetModeInt;
+
+        // ── Destination ───────────────────────────────────────────────────────
+        bool overlay = cfg.TargetMode == MorphTargetMode.TemplateOverlay;
+        UiHelpers.SectionLabel(overlay ? "Overlay:" : "Destination:", null);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(Remaining());
+        if (overlay)
+        {
+            var names = plugin.SavedTemplates.Select(t => t.Name).ToList();
+            int  idx  = cfg.TemplateIndex;
+            UiHelpers.DrawFilterableCombo("##dest", "##destfilter", names,
+                ref idx, ref _targetProfileFilter, "— select a template —");
+            cfg.TemplateIndex = idx;
+        }
+        else
+        {
+            var names = plugin.SavedProfiles.Select(p => p.Name).ToList();
+            int  idx  = cfg.DestIndex;
+            UiHelpers.DrawFilterableCombo("##dest", "##destfilter", names,
+                ref idx, ref _targetProfileFilter, "— select a profile —");
+            cfg.DestIndex = idx;
+        }
+
+        // ── Speed ─────────────────────────────────────────────────────────────
+        UiHelpers.SectionLabel("Speed:", null);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(Remaining());
+        float sp = cfg.Speed;
+        if (UiHelpers.GradientSlider("##speed", ref sp, 0.01f, 1f, "%.2f")) cfg.Speed = sp;
+
+        float secs = cfg.Speed > 0f ? 1f / cfg.Speed : float.PositiveInfinity;
+        ImGui.TextDisabled($"Time to complete: {secs:F1}s");
+
+        // ── Mode ──────────────────────────────────────────────────────────────
+        UiHelpers.SectionLabel("Mode:", null);
+        ImGui.SameLine();
+        int modeInt = (int)cfg.Mode;
+        if (UiHelpers.ButtonGroup("mode", UiHelpers.MorphModeLabels, ref modeInt, Remaining()))
+            cfg.Mode = (MorphMode)modeInt;
+
+        // ── Easing ────────────────────────────────────────────────────────────
+        UiHelpers.SectionLabel("Easing:", null);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(160 * scale);
+        var easingMode = cfg.Easing;
+        var curveId    = cfg.EasingCurveId;
+        if (UiHelpers.EasingCombo("##easing", plugin.Configuration, ref easingMode, ref curveId))
+        {
+            cfg.Easing        = easingMode;
+            cfg.EasingCurveId = curveId;
+        }
+
+        ImGui.Spacing();
+
+        // ── Live progress (while this peer's morph is running) ─────────────────
+        if (plugin.IsNetworkTargetActive(peerName))
+        {
+            float prog = plugin.GetNetworkTargetProgress(peerName);
+            UiHelpers.GradientProgressBar(prog, new Vector2(innerWidth, 14 * scale), $"{prog * 100f:F0}%");
+            ImGui.Spacing();
+        }
+
+        // ── Consent-gated Request/Waiting/Apply ─────────────────────────────────
+        bool hasDestination = HasValidDestination(plugin, cfg);
+        var  consent        = plugin.GetConsentForTarget(peerName);
+
+        if (consent == ConsentStatus.Pending)
+        {
+            using (ImRaii.Disabled(true))
+                ImGui.Button("Waiting…", new Vector2(innerWidth, 0));
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip($"Waiting for {peerName} to respond to your request…");
+        }
+        else
+        {
+            string label = consent == ConsentStatus.Granted ? "Apply" : "Request";
+            using (ImRaii.Disabled(!hasDestination))
+            {
+                if (UiHelpers.PrimaryButton(label, new Vector2(innerWidth, 0)))
+                    TriggerCardAction(peerName, cfg);
+            }
+            if (!hasDestination && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip(overlay ? "Select an overlay template first." : "Select a destination profile first.");
         }
     }
 
-    private void DrawTargetCard(string peerName, float innerWidth, bool busy)
+    /// <summary>
+    /// Resolves the card's configured destination and either sends a consent request (Idle) or
+    /// starts the morph directly (Granted) — the action behind both a card's own button and
+    /// Apply All. No-ops silently if the destination can no longer be resolved.
+    /// </summary>
+    private void TriggerCardAction(string peerName, TargetConfig cfg)
     {
-        ImGui.TextUnformatted(peerName);
-
-        bool isTarget = plugin.TargetPlayerName == peerName;
-        var  consent  = plugin.GetConsentForTarget(peerName);
-        var (consentText, consentColor) = consent switch
+        bool  overlay = cfg.TargetMode == MorphTargetMode.TemplateOverlay;
+        Guid  destId;
+        Guid? templateOwnerProfileId = null;
+        if (overlay)
         {
-            ConsentStatus.Pending => ("Waiting for response...", new Vector4(0.9f, 0.8f, 0.2f, 1f)),
-            ConsentStatus.Granted => ("Request granted.",        new Vector4(0.3f, 0.9f, 0.4f, 1f)),
-            _                     => (isTarget ? "Selected as Target." : "Not yet requested.",
-                                       isTarget ? new Vector4(0.4f, 0.9f, 0.6f, 1f) : Theme.TextMuted),
-        };
-        ImGui.TextColored(consentColor, consentText);
-
-        ImGui.Spacing();
-        using (ImRaii.Disabled(busy))
+            if (cfg.TemplateIndex < 0 || cfg.TemplateIndex >= plugin.SavedTemplates.Count) return;
+            var t = plugin.SavedTemplates[cfg.TemplateIndex];
+            destId = t.Id; templateOwnerProfileId = t.OwnerProfileId;
+        }
+        else
         {
-            string label = isTarget ? "Selected" : "Select as Target";
-            if (UiHelpers.PrimaryButton($"{label}##{peerName}", new Vector2(innerWidth, 0)))
+            if (cfg.DestIndex < 0 || cfg.DestIndex >= plugin.SavedProfiles.Count) return;
+            destId = plugin.SavedProfiles[cfg.DestIndex].Id;
+        }
+
+        var consent = plugin.GetConsentForTarget(peerName);
+        if (consent == ConsentStatus.Granted)
+            plugin.StartNetworkMorphFor(peerName, destId, cfg.Speed, cfg.Mode, cfg.Easing,
+                cfg.TargetMode, templateOwnerProfileId, cfg.EasingCurveId);
+        else if (consent == ConsentStatus.Idle)
+            plugin.RequestNetworkMorphConsent(peerName, destId, cfg.Speed, cfg.Mode, cfg.Easing,
+                cfg.TargetMode, templateOwnerProfileId, cfg.EasingCurveId);
+    }
+
+    /// <summary>Apply All (drives every configured card's own Request-or-Apply action) plus the
+    /// Pause All/Resume All/Reverse All/Reset All row, mirroring BrioTabView's Group controls.</summary>
+    private void DrawAllControlsRow(IReadOnlyList<string> targets)
+    {
+        float bw    = 90 * ImGuiHelpers.GlobalScale;
+        float scale = ImGuiHelpers.GlobalScale;
+
+        int applyable = targets.Count(peer =>
+            _targetConfigs.TryGetValue(peer, out var cfg) && HasValidDestination(plugin, cfg));
+
+        using (ImRaii.Disabled(applyable == 0))
+        {
+            if (UiHelpers.PrimaryButton($"Request All ({applyable})", new Vector2(bw + 40 * scale, 0)))
             {
-                plugin.TargetPlayerName = peerName;
-                onSelectTarget?.Invoke();
+                foreach (var peer in targets)
+                {
+                    if (_targetConfigs.TryGetValue(peer, out var cfg) && HasValidDestination(plugin, cfg))
+                        TriggerCardAction(peer, cfg);
+                }
             }
         }
+
+        ImGui.Spacing();
+        if (ImGui.Button("Pause All", new Vector2(bw, 0))) plugin.PauseAllNetworkTargets();
+        ImGui.SameLine();
+        if (UiHelpers.PrimaryButton("Resume All", new Vector2(bw, 0))) plugin.ResumeAllNetworkTargets();
+        ImGui.SameLine();
+        if (ImGui.Button("Reverse All", new Vector2(bw, 0))) plugin.ReverseAllNetworkTargets();
+        ImGui.SameLine();
+        if (UiHelpers.DangerButton("Reset All", new Vector2(bw, 0))) plugin.ResetAllNetworkTargets();
     }
 }

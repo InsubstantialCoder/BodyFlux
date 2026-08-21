@@ -331,15 +331,24 @@ public sealed class PlayerTabView
                     plugin.TargetPlayerName = null;
                 if (selfSelected) ImGui.SetItemDefaultFocus();
 
-                // Consenting peers
+                // Consenting peers. A peer already driven by the Sync tab's own target grid is
+                // shown but not selectable — two independent sessions fighting over the same
+                // character would be a mess, so pick one place or the other for that peer.
                 if (consentingPeers.Count > 0)
                 {
                     ImGui.Separator();
                     foreach (var peer in consentingPeers)
                     {
                         bool peerSelected = plugin.TargetPlayerName == peer;
-                        if (ImGui.Selectable(peer, peerSelected))
-                            plugin.TargetPlayerName = peer;
+                        bool inSyncGrid   = plugin.IsNetworkTargetActive(peer);
+                        using (ImRaii.Disabled(inSyncGrid))
+                        {
+                            if (ImGui.Selectable(inSyncGrid ? $"{peer}  (Sync morph active)" : peer, peerSelected))
+                                plugin.TargetPlayerName = peer;
+                        }
+                        if (inSyncGrid && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                            ImGui.SetTooltip("Already being morphed from the Sync tab's target grid. " +
+                                              "Reset it there first to target them here instead.");
                         if (peerSelected) ImGui.SetItemDefaultFocus();
                     }
                 }
