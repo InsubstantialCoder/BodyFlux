@@ -13,8 +13,8 @@ public static class ChangelogEntries
         new ChangelogEntry(new Version(0, 7, 2, 0), "Sync Tab Update",
         [
             "Minor UI changes to Sync Tab.",
-            "Tooltips added do different options.",
-            "Changed Connected Users list to a Grid where you can select the morph taget through it. This is the foundation for the multi-target morphing feature coming in next update.",
+            "Tooltips added to different options.",
+            "Changed Connected Users list to a Grid where you can select the morph target through it. This is the foundation for the multi-target morphing feature coming in next update.",
         ]),
         new ChangelogEntry(new Version(0, 7, 1, 1), "Custom Footer",
         [
