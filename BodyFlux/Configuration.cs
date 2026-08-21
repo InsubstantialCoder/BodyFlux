@@ -51,6 +51,10 @@ public class Configuration : IPluginConfiguration
     // User-authored bezier easing curves (Easing tab).
     public List<EasingCurve> CustomEasingCurves { get; set; } = [];
 
+    // Highest changelog version the user has dismissed the "What's New" popup for. Stored as a
+    // string (parsed with Version.TryParse) rather than serializing System.Version directly.
+    public string? LastSeenChangelogVersion { get; set; } = null;
+
     // ── Presets & History ────────────────────────────────────────────────────
     public List<MorphPreset?> Presets           { get; set; } = [];
     public List<MorphPreset?> BrioPresets       { get; set; } = [];

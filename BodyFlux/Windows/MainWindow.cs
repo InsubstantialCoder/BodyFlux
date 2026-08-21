@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.ImGuiFileDialog;
@@ -27,8 +29,20 @@ public class MainWindow : Window, IDisposable
     private readonly Tabs.BrioTabView      _brioTab;
     private readonly Tabs.KeybindsTabView  _keybindsTab;
     private readonly Tabs.EasingCurvesTabView _easingTab;
+    private readonly Tabs.ChangelogTabView _changelogTab = new();
 
     private readonly string _versionText;
+
+    // ── "What's New" modal ───────────────────────────────────────────────────
+    // Resolved once at construction: every ChangelogEntries.All entry newer than what the user last
+    // dismissed (Configuration.LastSeenChangelogVersion). A brand-new/never-set config shows just the
+    // latest entry rather than the full history — that covers both a genuinely fresh install and an
+    // existing install upgrading into this feature for the first time, without dumping years of
+    // changelog on either.
+    private const string ChangelogPopupId = "##BodyFluxChangelog";
+    private readonly List<ChangelogEntry> _pendingChangelog;
+    private bool _hasUnseenChangelog;
+    private bool _requestChangelogPopup;
 
     // ── Collapse state ───────────────────────────────────────────────────────
     // ImGui's own window collapse is a title-bar feature we no longer have; this reimplements it
@@ -64,6 +78,11 @@ public class MainWindow : Window, IDisposable
 
         var version = typeof(Plugin).Assembly.GetName().Version;
         _versionText = version is null ? "" : $"v{version.Major}.{version.Minor}.{version.Build}.{version.Revision}";
+
+        _pendingChangelog = Version.TryParse(plugin.Configuration.LastSeenChangelogVersion, out var lastSeen)
+            ? ChangelogEntries.All.Where(e => e.Version > lastSeen).ToList()
+            : ChangelogEntries.All.Take(1).ToList();
+        _hasUnseenChangelog = _pendingChangelog.Count > 0;
 
         _syncTab   = new Tabs.SyncTabView(plugin);
         _seqList   = new Tabs.SequenceListView(plugin);
@@ -116,6 +135,9 @@ public class MainWindow : Window, IDisposable
             plugin.RefreshProfiles();
             _refreshedOnOpen = true;
         }
+
+        if (_hasUnseenChangelog)
+            _requestChangelogPopup = true;
     }
 
     // ── Top-level draw ────────────────────────────────────────────────────────
@@ -148,6 +170,13 @@ public class MainWindow : Window, IDisposable
         if (menuClicked)
             ImGui.OpenPopup(TitleMenuPopupId);
         DrawTitleMenu();
+
+        if (_requestChangelogPopup)
+        {
+            ImGui.OpenPopup(ChangelogPopupId);
+            _requestChangelogPopup = false;
+        }
+        DrawChangelogModal();
 
         if (_collapsed) return; // just the bar, skip tabs/content entirely while collapsed
 
@@ -214,6 +243,11 @@ public class MainWindow : Window, IDisposable
         using (var tab = ImRaii.TabItem("Easing Curves"))
             if (tab) _easingTab.Draw();
 
+        // Changelog tab — the full version history, browsable any time (independent of the
+        // one-shot "What's New" modal above).
+        using (var tab = ImRaii.TabItem("Changelog"))
+            if (tab) _changelogTab.Draw();
+
         // Render any open file dialog (MCDF origin picker) on top of the window.
         _fileDialog.Draw();
     }
@@ -240,6 +274,52 @@ public class MainWindow : Window, IDisposable
         // rest of the window, so a lower floor risks fading the only way back to this control.
         if (ImGui.SliderFloat("Opacity", ref opacityPct, 20f, 100f, "%.0f%%"))
             _opacity = opacityPct / 100f;
+
+        ImGui.EndPopup();
+    }
+
+    /// <summary>
+    /// Blocking "What's New" popup for whatever's in <see cref="_pendingChangelog"/>. "Got it" is the
+    /// only way out — it persists <see cref="Configuration.LastSeenChangelogVersion"/> so this exact
+    /// list won't come back; a full history is always available in the Changelog tab regardless.
+    /// </summary>
+    private void DrawChangelogModal()
+    {
+        if (!ImGui.BeginPopupModal(ChangelogPopupId, ImGuiWindowFlags.AlwaysAutoResize)) return;
+
+        ImGui.TextUnformatted("What's New");
+        ImGui.Spacing();
+
+        for (int i = 0; i < _pendingChangelog.Count; i++)
+        {
+            var entry = _pendingChangelog[i];
+            Tabs.UiHelpers.SectionLabel($"v{entry.Version} — {entry.Title}", null);
+            // BulletText never wraps (see ChangelogTabView). TextWrapped isn't right here either —
+            // it always wraps at 0f (the container edge) regardless of any wrap pos already pushed,
+            // which on an AlwaysAutoResize popup means "barely wrap at all, just grow wider". Pushing
+            // an explicit fixed width and using TextUnformatted (which does respect the active wrap
+            // pos) keeps the popup a sane, constant width instead.
+            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 28f);
+            foreach (var line in entry.Highlights)
+            {
+                ImGui.Bullet();
+                ImGui.SameLine();
+                ImGui.TextUnformatted(line);
+            }
+            ImGui.PopTextWrapPos();
+            if (i < _pendingChangelog.Count - 1)
+                ImGui.Spacing();
+        }
+
+        ImGui.Spacing();
+        if (Tabs.UiHelpers.PrimaryButton("Got it", new Vector2(160, 0)))
+        {
+            var version = typeof(Plugin).Assembly.GetName().Version;
+            plugin.Configuration.LastSeenChangelogVersion = version?.ToString();
+            plugin.Configuration.Save();
+            _hasUnseenChangelog = false;
+            ImGui.CloseCurrentPopup();
+        }
 
         ImGui.EndPopup();
     }

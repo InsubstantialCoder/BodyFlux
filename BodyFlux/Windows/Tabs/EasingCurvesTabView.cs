@@ -42,12 +42,6 @@ public sealed class EasingCurvesTabView
         bool  requestOpen = false;
         int   deleteIdx   = -1;
 
-        if (UiHelpers.PrimaryButton("Add New Easing Curve", new Vector2(200 * scale, 0)))
-        {
-            BeginNew(config);
-            requestOpen = true;
-        }
-
         ImGui.Spacing();
 
         using (var scroll = ImRaii.Child("##EasingCurveScroll", new Vector2(0, 0), false))
@@ -71,7 +65,17 @@ public sealed class EasingCurvesTabView
                 ImGui.Spacing();
                 ImGui.Spacing();
 
-                UiHelpers.SectionLabel("Custom Curves", null);
+                UiHelpers.SectionLabel("Custom Curves",
+                    "Create your own easing curves by dragging two control points on a bezier " +
+                    "graph. Save one here, then pick it from any Easing dropdown in the plugin " +
+                    "(Player, Gpose, Sequences, Gauge Link) instead of the 4 built-in shapes.");
+                ImGui.Spacing();
+
+                if (UiHelpers.PrimaryButton("Add New Easing Curve", new Vector2(200 * scale, 0)))
+                {
+                    BeginNew(config);
+                    requestOpen = true;
+                }
                 ImGui.Spacing();
 
                 if (config.CustomEasingCurves.Count == 0)
@@ -245,7 +249,9 @@ public sealed class EasingCurvesTabView
 
         ImGui.Spacing();
 
-        bool changed = DrawBezierCanvas(ref _editP1, ref _editP2, 220 * scale);
+        // A bit bigger than before (was 220) to compensate for the wider YMin/YMax range now mapped
+        // onto it — otherwise the [0,1] unit square would shrink noticeably as a fraction of the box.
+        bool changed = DrawBezierCanvas(ref _editP1, ref _editP2, 260 * scale);
 
         ImGui.SameLine();
         ImGui.BeginGroup();
@@ -264,13 +270,22 @@ public sealed class EasingCurvesTabView
         // to lose track of and hard to grab again.
         _editP1 = new Vector2(Math.Clamp(x1, 0f, 1f), Math.Clamp(y1, YMin, YMax));
         _editP2 = new Vector2(Math.Clamp(x2, 0f, 1f), Math.Clamp(y2, YMin, YMax));
+
+        ImGui.Spacing();
+        // ImGui gives BeginPopupModal's own title bar no public API to attach a widget to (it's
+        // drawn as window chrome, not an item we called), so this can't literally sit in the title
+        // bar — placed in the leftover space under the control points instead.
+        UiHelpers.DrawHelpIcon(
+            "Drag the two circles to shape the curve — X stays within 0–1 (time), Y can go beyond " +
+            "0–1 for overshoot effects like Back. Pick a preset above to start from a known shape, " +
+            "or type exact values here.");
         ImGui.EndGroup();
 
         if (changed)
             _editPresetIndex = -1;
 
         ImGui.Spacing();
-        DrawLivePreview(220 * scale, 26 * scale);
+        DrawLivePreview(260 * scale, 26 * scale); // matches the canvas width above it
 
         ImGui.Spacing();
         using (ImRaii.Disabled(string.IsNullOrWhiteSpace(_editName)))
@@ -304,11 +319,19 @@ public sealed class EasingCurvesTabView
 
     // ── Canvas + drag handles ────────────────────────────────────────────────
 
-    // Vertical span of the canvas in curve-space: a bit taller than the [0,1] unit square so
-    // overshoot handles (y outside 0..1, e.g. the "Back" preset) stay visible and draggable instead
-    // of getting clipped at the square's edge.
-    private const float YMin = -0.5f;
-    private const float YMax = 1.65f; // clears the "Back" preset's P1.Y (1.56) with a little headroom
+    // Vertical span of the canvas in curve-space: taller than the [0,1] unit square so overshoot
+    // handles (y outside 0..1, e.g. the "Back" preset) have real room to be dragged further out —
+    // widened past the previous ±0.5/1.65 on request for more room to work with. Still a fixed
+    // canvas-sized box though, not an unbounded drag: the earlier bug wasn't "the handle went past
+    // the unit square", it was letting the drag go past *this* box entirely, out into whatever
+    // widget happened to be drawn next (the control-point fields, Save/Cancel) and stealing the
+    // click there instead. Keeping the value range and the drawn box in lockstep (both read YMin/
+    // YMax) is what keeps a handle always inside its own dedicated screen area, however far out it
+    // goes — no z-order/overlap trick needed, same fix as before, just with more headroom now.
+    // X stays clamped to 0..1 regardless — same convention CSS's cubic-bezier() and most bezier
+    // editors use, since x is time and can't run backwards or leave the curve's domain.
+    private const float YMin = -1f;
+    private const float YMax = 2.5f;
 
     /// <summary>Draws the bezier canvas with draggable P1/P2 handles. Returns true if either point moved.</summary>
     private static bool DrawBezierCanvas(ref Vector2 p1, ref Vector2 p2, float size)

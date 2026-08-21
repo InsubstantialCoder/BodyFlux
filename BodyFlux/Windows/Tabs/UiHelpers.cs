@@ -189,7 +189,7 @@ internal static class UiHelpers
     }
 
     /// <summary>Small circled "?", the conventional tooltip-info glyph, drawn by hand since ImGui has no built-in icon font here.</summary>
-    private static void DrawHelpIcon(string tooltip)
+    internal static void DrawHelpIcon(string tooltip)
     {
         const float r = 7f;
         float lineH = ImGui.GetTextLineHeight();
