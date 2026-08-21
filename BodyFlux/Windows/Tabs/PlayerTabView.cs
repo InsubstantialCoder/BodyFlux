@@ -310,7 +310,8 @@ public sealed class PlayerTabView
 
         UiHelpers.SectionLabel("Target Actor:",
             "Who the morph is applied to. Self morphs your own character; picking a connected Sync " +
-            "peer sends them a consent request first (unless they've already granted it).");
+            "peer always sends them a consent request first, every single time, and the morph only " +
+            "starts once they accept it.");
         ImGui.Spacing();
 
         string targetPreview = string.IsNullOrEmpty(plugin.TargetPlayerName)

@@ -84,7 +84,7 @@ public class MainWindow : Window, IDisposable
             : ChangelogEntries.All.Take(1).ToList();
         _hasUnseenChangelog = _pendingChangelog.Count > 0;
 
-        _syncTab   = new Tabs.SyncTabView(plugin);
+        _syncTab   = new Tabs.SyncTabView(plugin, () => _requestPlayerTabFocus = true);
         _seqList   = new Tabs.SequenceListView(plugin);
         _playerTab = new Tabs.PlayerTabView(plugin, _seqList, () => _refreshedOnOpen = false);
         _brioTab   = new Tabs.BrioTabView(plugin, _seqList, _fileDialog);

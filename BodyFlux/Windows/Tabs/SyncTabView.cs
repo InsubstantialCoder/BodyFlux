@@ -5,6 +5,7 @@ using Dalamud.Interface;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
+using BodyFlux.Services;
 
 namespace BodyFlux.Windows.Tabs;
 
@@ -14,9 +15,14 @@ namespace BodyFlux.Windows.Tabs;
 /// </summary>
 public sealed class SyncTabView
 {
-    private readonly Plugin plugin;
+    private readonly Plugin  plugin;
+    private readonly Action? onSelectTarget; // asks MainWindow to focus the Player tab
 
-    public SyncTabView(Plugin plugin) => this.plugin = plugin;
+    public SyncTabView(Plugin plugin, Action? onSelectTarget = null)
+    {
+        this.plugin        = plugin;
+        this.onSelectTarget = onSelectTarget;
+    }
 
     private static string GeneratePairKey()
     {
@@ -57,17 +63,24 @@ public sealed class SyncTabView
             if (!syncEnabled)
                 plugin.DisconnectNetworkSync();
         }
+        ImGui.SameLine();
+        UiHelpers.DrawHelpIcon(
+            "Turns Sync on for this session. Once enabled, generate or enter a Sync Key below and " +
+            "press Connect to start sharing morphs with your partner(s) in real time.");
 
         ImGui.Spacing();
 
         bool allowRemote = plugin.AllowRemoteMorph;
         if (ImGui.Checkbox("Allow others to morph my character", ref allowRemote))
             plugin.AllowRemoteMorph = allowRemote;
+        ImGui.SameLine();
+        UiHelpers.DrawHelpIcon(
+            "When enabled, connected players with your Sync Key can send you a request to apply a " +
+            "morph profile to your character. This does not apply anything automatically, you still " +
+            "get an Accept/Deny prompt for every individual request and can deny it.");
 
-        ImGui.PushTextWrapPos(0f);
-        ImGui.TextDisabled("When enabled, connected players with your Sync Key can apply morph profiles to your character.");
-        ImGui.PopTextWrapPos();
-
+        ImGui.Spacing();
+        ImGui.Separator();
         ImGui.Spacing();
 
         // ── Sync Key row ──────────────────────────────────────────────────────
@@ -154,38 +167,98 @@ public sealed class SyncTabView
         }
 
         // ── Connected users ───────────────────────────────────────────────────
+        // One consolidated listing instead of a plain peer-name list plus a separate quick-select
+        // grid, the grid already shows everyone targetable so a second, redundant list added
+        // nothing.
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
         var maxPeers = plugin.NetworkMaxPeers;
         if (maxPeers.HasValue)
             ImGui.TextDisabled($"Up to {maxPeers} players can share the same Sync Key simultaneously.");
-        UiHelpers.SectionLabel("Connected users:", null);
+        UiHelpers.SectionLabel("Connected Users:",
+            "Quick-select a connected, consenting peer as your Target Actor. Configuring and " +
+            "applying the morph itself still happens from the Player tab's Single sub-tab.");
+        ImGui.Spacing();
 
-        var peers     = plugin.ConnectedPeers;
-        var localName = plugin.LocalPlayerName;
-
-        if (peers == null)
+#if DEBUG
+        // Debug-only: lets a solo developer populate the grid below and exercise the whole
+        // Request → Pending → Granted flow without a second real player. The fake peer self-grants
+        // consent shortly after being requested (see SyncManager.RequestConsent).
+        using (ImRaii.Disabled(!plugin.IsNetworkActive))
         {
-            ImGui.TextDisabled("  (not connected)");
+            if (ImGui.Button("Add Dummy Peer (Debug)"))
+                plugin.AddDebugSyncPeer();
         }
-        else
-        {
-            if (!string.IsNullOrEmpty(localName))
-                ImGui.TextColored(new Vector4(0.4f, 0.9f, 0.6f, 1f), $"  {localName} (you)");
+        if (!plugin.IsNetworkActive && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Connect to Sync first.");
 
-            // peers is keyed by display label (real name for nearby peers, short opaque id for
-            // distant ones — names never cross the relay). Show everyone seen within the stale window.
-            var  cutoff  = DateTime.UtcNow.AddSeconds(-90);
-            bool anyPeer = false;
-            foreach (var kv in peers)
+        ImGui.SameLine();
+        if (UiHelpers.DangerButton("Clear Dummy Peers (Debug)", Vector2.Zero))
+            plugin.ClearDebugSyncPeers();
+
+        ImGui.Spacing();
+#endif
+
+        DrawTargetGrid();
+    }
+
+    private void DrawTargetGrid()
+    {
+        var targets = plugin.ConsentingPeers;
+
+        if (!plugin.IsNetworkActive)
+        {
+            ImGui.TextDisabled("Connect to Sync to see targetable peers here.");
+            return;
+        }
+        if (targets.Count == 0)
+        {
+            ImGui.TextDisabled("No consenting peers connected right now.");
+            return;
+        }
+
+        bool busy = plugin.IsMorphing || plugin.IsPaused;
+
+        using var table = ImRaii.Table("##SyncTargetGrid", 2);
+        if (!table) return;
+
+        ImGui.TableSetupColumn("##a", ImGuiTableColumnFlags.WidthStretch, 1f);
+        ImGui.TableSetupColumn("##b", ImGuiTableColumnFlags.WidthStretch, 1f);
+
+        foreach (var peer in targets)
+        {
+            ImGui.TableNextColumn();
+            ImGui.PushID(peer);
+            UiHelpers.Card(innerWidth => DrawTargetCard(peer, innerWidth, busy));
+            ImGui.PopID();
+        }
+    }
+
+    private void DrawTargetCard(string peerName, float innerWidth, bool busy)
+    {
+        ImGui.TextUnformatted(peerName);
+
+        bool isTarget = plugin.TargetPlayerName == peerName;
+        var  consent  = plugin.GetConsentForTarget(peerName);
+        var (consentText, consentColor) = consent switch
+        {
+            ConsentStatus.Pending => ("Waiting for response...", new Vector4(0.9f, 0.8f, 0.2f, 1f)),
+            ConsentStatus.Granted => ("Request granted.",        new Vector4(0.3f, 0.9f, 0.4f, 1f)),
+            _                     => (isTarget ? "Selected as Target." : "Not yet requested.",
+                                       isTarget ? new Vector4(0.4f, 0.9f, 0.6f, 1f) : Theme.TextMuted),
+        };
+        ImGui.TextColored(consentColor, consentText);
+
+        ImGui.Spacing();
+        using (ImRaii.Disabled(busy))
+        {
+            string label = isTarget ? "Selected" : "Select as Target";
+            if (UiHelpers.PrimaryButton($"{label}##{peerName}", new Vector2(innerWidth, 0)))
             {
-                if (kv.Value < cutoff) continue;
-                ImGui.TextUnformatted($"  {kv.Key}");
-                anyPeer = true;
+                plugin.TargetPlayerName = peerName;
+                onSelectTarget?.Invoke();
             }
-            if (!anyPeer)
-                ImGui.TextDisabled("  No other users connected.");
         }
     }
 }

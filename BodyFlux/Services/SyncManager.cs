@@ -70,6 +70,31 @@ public sealed class SyncManager : IDisposable
     private bool         _idleDisconnected;
     private bool         _quotaExhausted;
 
+#if DEBUG
+    // ── Debug-only dummy peers ─────────────────────────────────────────────────
+    // Lets a solo developer exercise the Sync UI (peer list, target grid, consent flow) without a
+    // second real player. Layered on top of the real peer data everywhere it's read, never sent
+    // over the actual relay connection. Requesting consent from one of these fakes doesn't round-
+    // trip over the network either, it self-grants after a short delay so the Pending → Granted
+    // states are still visible to test against.
+    private readonly List<string> _debugPeers = new();
+    private readonly Dictionary<string, DateTime> _debugConsentGrantAt = new();
+    private const float DebugConsentDelaySeconds = 1.5f;
+
+    /// <summary>Adds one fake connected, consenting peer. No-op while not connected.</summary>
+    public void AddDebugPeer()
+    {
+        if (_net == null) return;
+        _debugPeers.Add($"Debug Peer {_debugPeers.Count + 1}");
+    }
+
+    public void ClearDebugPeers()
+    {
+        _debugPeers.Clear();
+        _debugConsentGrantAt.Clear();
+    }
+#endif
+
     public SyncManager(CustomizePlusIpc ipc, IObjectTable objects, IPluginLog log, Configuration config, IChatGui chat)
     {
         _ipc     = ipc;
@@ -123,6 +148,10 @@ public sealed class SyncManager : IDisposable
             var result = new Dictionary<string, DateTime>();
             foreach (var kv in _net.Peers)
                 result[names.GetValueOrDefault(kv.Key) ?? PeerIdentity.Short(kv.Key)] = kv.Value;
+#if DEBUG
+            foreach (var name in _debugPeers)
+                result[name] = DateTime.UtcNow;
+#endif
             return result;
         }
     }
@@ -144,6 +173,9 @@ public sealed class SyncManager : IDisposable
                 if (kv.Value && _net.Peers.TryGetValue(kv.Key, out var seen) && seen >= cutoff
                     && names.TryGetValue(kv.Key, out var name))
                     list.Add(name);
+#if DEBUG
+            list.AddRange(_debugPeers);
+#endif
             return list;
         }
     }
@@ -178,6 +210,16 @@ public sealed class SyncManager : IDisposable
         var id = PeerIdentity.Of(targetName, _config.PairKey);
         _consentStatus[id] = ConsentStatus.Pending;
         _onConsentGranted  = onGranted;
+
+#if DEBUG
+        if (_debugPeers.Contains(targetName))
+        {
+            // No real peer to answer, so self-grant after a short delay instead of sending a
+            // request nothing will ever reply to (see Tick()).
+            _debugConsentGrantAt[id] = DateTime.UtcNow.AddSeconds(DebugConsentDelaySeconds);
+            return;
+        }
+#endif
         _net.SendMorphRequest(targetName);
     }
 
@@ -303,6 +345,9 @@ public sealed class SyncManager : IDisposable
         _grantedTo.Clear();
         _promptCooldown.Clear();
         _onConsentGranted = null;
+#if DEBUG
+        _debugConsentGrantAt.Clear();
+#endif
     }
 
     public void Dispose()
@@ -398,6 +443,9 @@ public sealed class SyncManager : IDisposable
             _grantedTo.Clear();
             _promptCooldown.Clear();
             _onConsentGranted = null;
+#if DEBUG
+            _debugConsentGrantAt.Clear();
+#endif
             _chat.Print("[BodyFlux] Daily relay quota exceeded — sync paused until tomorrow.");
             return;
         }
@@ -414,6 +462,22 @@ public sealed class SyncManager : IDisposable
         }
 
         if (_net == null) return;
+
+#if DEBUG
+        if (_debugConsentGrantAt.Count > 0)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var (id, at) in new List<KeyValuePair<string, DateTime>>(_debugConsentGrantAt))
+            {
+                if (now < at) continue;
+                _debugConsentGrantAt.Remove(id);
+                _consentStatus[id] = ConsentStatus.Granted;
+                var cb = _onConsentGranted;
+                _onConsentGranted = null;
+                cb?.Invoke();
+            }
+        }
+#endif
 
         while (_net.TryDequeue(out var frame))
         {
@@ -654,6 +718,9 @@ public sealed class SyncManager : IDisposable
         _grantedTo.Clear();
         _promptCooldown.Clear();
         _onConsentGranted = null;
+#if DEBUG
+        _debugConsentGrantAt.Clear();
+#endif
     }
 
     /// <summary>

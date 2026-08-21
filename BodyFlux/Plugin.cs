@@ -67,6 +67,15 @@ public sealed class Plugin : IDalamudPlugin
     public IReadOnlyDictionary<string, DateTime>? ConnectedPeers    => Sync.Peers;
     public IReadOnlyList<string>                  ConsentingPeers   => Sync.ConsentingPeers;
 
+#if DEBUG
+    /// <summary>Debug-only: adds a fake connected, consenting peer so the Sync tab's target grid
+    /// and consent flow can be tested solo. No-op unless already connected.</summary>
+    public void AddDebugSyncPeer() => Sync.AddDebugPeer();
+
+    /// <summary>Debug-only: removes every fake peer added via <see cref="AddDebugSyncPeer"/>.</summary>
+    public void ClearDebugSyncPeers() => Sync.ClearDebugPeers();
+#endif
+
     // ── Properties forwarded from MorphEngine ─────────────────────────────────
 
     // Selection state
