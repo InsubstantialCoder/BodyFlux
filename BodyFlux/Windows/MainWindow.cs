@@ -147,8 +147,7 @@ public class MainWindow : Window, IDisposable
         bool syncLive = plugin.Configuration.NetworkSyncEnabled
                      && plugin.NetworkSyncStatus == "Connected";
         var (closeClicked, collapseToggled, menuClicked) = Theme.DrawCustomTitleBar(
-            "Body Flux", _versionText, syncLive, plugin.ConnectedPeers?.Count ?? 0, _collapsed,
-            plugin.IsCustomizePlusAvailable, plugin.IsBrioAvailable);
+            "Body Flux", _versionText, syncLive, plugin.ConnectedPeers?.Count ?? 0, _collapsed);
 
         if (closeClicked)
             IsOpen = false;
@@ -180,76 +179,90 @@ public class MainWindow : Window, IDisposable
 
         if (_collapsed) return; // just the bar, skip tabs/content entirely while collapsed
 
-        // ── GPose state-change detection ──────────────────────────────────────
-        bool inGpose = plugin.IsInGPose;
-
-        if (inGpose && !_wasInGpose)
+        // Tab content lives in its own Child, sized to leave FooterHeight pixels free at the
+        // bottom of the window for the custom footer drawn after it (dependency status + the
+        // "/bodyflux" hint, common to every tab instead of Player's Single tab alone).
+        using (var body = ImRaii.Child("##MainBody", new Vector2(0, -Theme.FooterHeight), false))
         {
-            // Just entered GPose: enable the Brio tab and reset its selections,
-            // but do NOT steal focus — the user stays on whatever tab they were on.
-            plugin.SelectedBrioActorIndex = -1;
-            plugin.SelectedBrioDestIndex  = -1;
+            if (body)
+            {
+                // ── GPose state-change detection ──────────────────────────────────
+                bool inGpose = plugin.IsInGPose;
+
+                if (inGpose && !_wasInGpose)
+                {
+                    // Just entered GPose: enable the Brio tab and reset its selections,
+                    // but do NOT steal focus — the user stays on whatever tab they were on.
+                    plugin.SelectedBrioActorIndex = -1;
+                    plugin.SelectedBrioDestIndex  = -1;
+                }
+                else if (!inGpose && _wasInGpose)
+                {
+                    // Just exited GPose: tear down every Brio actor morph so nothing lingers, then
+                    // return to the Player tab. The player session is left untouched.
+                    plugin.ResetAllBrio();
+                    _requestPlayerTabFocus = true;
+                }
+
+                _wasInGpose = inGpose;
+
+                // ── Tab bar ───────────────────────────────────────────────────────
+                using (var tabBar = ImRaii.TabBar("##MainTabs"))
+                {
+                    if (tabBar)
+                    {
+                        // Player tab — gains focus when returning from GPose
+                        var playerFlags = _requestPlayerTabFocus
+                            ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+                        _requestPlayerTabFocus = false;
+                        using (var tab = ImRaii.TabItem("Player", playerFlags))
+                            if (tab) _playerTab.Draw();
+
+                        // Sync tab — label turns green while actively connected.
+                        // NOTE: must use a scoped `using (...)` block so EndTabItem fires before the next
+                        // tab is declared. A bare `using var` defers EndTabItem to end of Draw(), leaving the
+                        // Sync item "open" and causing the following Brio tab to nest under it (and stop
+                        // responding to clicks) whenever Sync is the active tab.
+                        if (syncLive)
+                            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.3f, 0.9f, 0.4f, 1f));
+                        using (var syncTab = ImRaii.TabItem("Sync"))
+                        {
+                            if (syncLive)
+                                ImGui.PopStyleColor(); // pop after BeginTabItem; tab content draws in normal colour
+                            if (syncTab) _syncTab.Draw();
+                        }
+
+                        // Brio tab — always visible; disabled (grey, non-clickable) outside GPose.
+                        // Using explicit Begin/EndDisabled rather than ImRaii.Disabled(!inGpose) because
+                        // the RAII wrapper always calls EndDisabled() even when disabled=false, which
+                        // unbalances the ImGui disabled stack and keeps the tab grey while in GPose.
+                        if (!inGpose) ImGui.BeginDisabled();
+                        using (var tab = ImRaii.TabItem("Gpose"))
+                            if (tab) _brioTab.Draw();
+                        if (!inGpose) ImGui.EndDisabled();
+
+                        // Keybinds tab — configure hotkeys for the morph operations.
+                        using (var tab = ImRaii.TabItem("Keybinds"))
+                            if (tab) _keybindsTab.Draw();
+
+                        // Easing Curves tab — author/manage custom bezier easing curves, selectable from every
+                        // EasingMode picker above.
+                        using (var tab = ImRaii.TabItem("Easing Curves"))
+                            if (tab) _easingTab.Draw();
+
+                        // Changelog tab — the full version history, browsable any time (independent of the
+                        // one-shot "What's New" modal above).
+                        using (var tab = ImRaii.TabItem("Changelog"))
+                            if (tab) _changelogTab.Draw();
+                    }
+                }
+
+                // Render any open file dialog (MCDF origin picker) on top of the window.
+                _fileDialog.Draw();
+            }
         }
-        else if (!inGpose && _wasInGpose)
-        {
-            // Just exited GPose: tear down every Brio actor morph so nothing lingers, then
-            // return to the Player tab. The player session is left untouched.
-            plugin.ResetAllBrio();
-            _requestPlayerTabFocus = true;
-        }
 
-        _wasInGpose = inGpose;
-
-        // ── Tab bar ───────────────────────────────────────────────────────────
-        using var tabBar = ImRaii.TabBar("##MainTabs");
-        if (!tabBar) return;
-
-        // Player tab — gains focus when returning from GPose
-        var playerFlags = _requestPlayerTabFocus
-            ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-        _requestPlayerTabFocus = false;
-        using (var tab = ImRaii.TabItem("Player", playerFlags))
-            if (tab) _playerTab.Draw();
-
-        // Sync tab — label turns green while actively connected.
-        // NOTE: must use a scoped `using (...)` block so EndTabItem fires before the next
-        // tab is declared. A bare `using var` defers EndTabItem to end of Draw(), leaving the
-        // Sync item "open" and causing the following Brio tab to nest under it (and stop
-        // responding to clicks) whenever Sync is the active tab.
-        if (syncLive)
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.3f, 0.9f, 0.4f, 1f));
-        using (var syncTab = ImRaii.TabItem("Sync"))
-        {
-            if (syncLive)
-                ImGui.PopStyleColor(); // pop after BeginTabItem; tab content draws in normal colour
-            if (syncTab) _syncTab.Draw();
-        }
-
-        // Brio tab — always visible; disabled (grey, non-clickable) outside GPose.
-        // Using explicit Begin/EndDisabled rather than ImRaii.Disabled(!inGpose) because
-        // the RAII wrapper always calls EndDisabled() even when disabled=false, which
-        // unbalances the ImGui disabled stack and keeps the tab grey while in GPose.
-        if (!inGpose) ImGui.BeginDisabled();
-        using (var tab = ImRaii.TabItem("Gpose"))
-            if (tab) _brioTab.Draw();
-        if (!inGpose) ImGui.EndDisabled();
-
-        // Keybinds tab — configure hotkeys for the morph operations.
-        using (var tab = ImRaii.TabItem("Keybinds"))
-            if (tab) _keybindsTab.Draw();
-
-        // Easing Curves tab — author/manage custom bezier easing curves, selectable from every
-        // EasingMode picker above.
-        using (var tab = ImRaii.TabItem("Easing Curves"))
-            if (tab) _easingTab.Draw();
-
-        // Changelog tab — the full version history, browsable any time (independent of the
-        // one-shot "What's New" modal above).
-        using (var tab = ImRaii.TabItem("Changelog"))
-            if (tab) _changelogTab.Draw();
-
-        // Render any open file dialog (MCDF origin picker) on top of the window.
-        _fileDialog.Draw();
+        Theme.DrawCustomFooter(plugin.IsCustomizePlusAvailable, plugin.IsBrioAvailable);
     }
 
     /// <summary>Pin/Opacity menu opened from the title bar's three-dash button. See the field comment

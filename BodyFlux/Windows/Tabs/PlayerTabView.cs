@@ -98,25 +98,6 @@ public sealed class PlayerTabView
         UiHelpers.Card(DrawMorphingCard);
 
         DrawHistory();
-
-        DrawCommandHint();
-    }
-
-    /// <summary>
-    /// Right-aligned reminder that the same actions are reachable from chat. The Customize+/Brio
-    /// traffic light that used to sit down here moved to the title bar, so it shows once for every
-    /// tab instead of once per tab that happens to need it.
-    /// </summary>
-    private void DrawCommandHint()
-    {
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-
-        const string cmd = "/bodyflux";
-        var cmdSize = ImGui.CalcTextSize(cmd);
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - cmdSize.X);
-        ImGui.TextDisabled(cmd);
     }
 
     private void DrawLeftColumn()

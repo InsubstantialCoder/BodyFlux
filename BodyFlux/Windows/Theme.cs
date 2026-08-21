@@ -177,7 +177,7 @@ internal static class Theme
     /// its own collapsed flag) since this method doesn't own that state.
     /// </returns>
     public static (bool closeClicked, bool collapseToggled, bool menuClicked) DrawCustomTitleBar(
-        string title, string version, bool syncLive, int peerCount, bool collapsed, bool cpOk, bool brioOk)
+        string title, string version, bool syncLive, int peerCount, bool collapsed)
     {
         var   drawList = ImGui.GetWindowDrawList();
         var   winPos   = ImGui.GetWindowPos();
@@ -242,23 +242,16 @@ internal static class Theme
         var versionPos = new Vector2(textX + titleSize.X + 8f, barMin.Y + (TitleBarHeight - ImGui.GetFontSize()) / 2f);
         drawList.AddText(versionPos, ImGui.GetColorU32(TextMuted), version);
 
-        // ── Dependency status dots (Customize+, Brio), right-aligned against the button row —
-        //    replacing the per-tab banners Player and Gpose each used to draw for the same two checks ──
-        float rightEdge = menuMin.X - 14f;
-        var brioDotCenter = new Vector2(rightEdge - 4f, barMin.Y + TitleBarHeight / 2f);
-        DrawTitleBarStatusDot(drawList, brioDotCenter, brioOk, brioOk ? "Brio enabled" : "Brio not detected");
-
-        var cpDotCenter = new Vector2(brioDotCenter.X - 16f, brioDotCenter.Y);
-        DrawTitleBarStatusDot(drawList, cpDotCenter, cpOk, cpOk ? "Customize+ enabled" : "Customize+ not detected");
-
-        // ── Sync badge, sitting left of the dependency dots (not between them and the buttons) ──
+        // ── Sync badge, right-aligned against the button row. Customize+/Brio status used to show
+        //    as small dots here too, but there wasn't room for full text, so they moved down to
+        //    the custom footer (see DrawCustomFooter) instead. ──
         if (syncLive)
         {
             string text     = $"SYNC · {peerCount}";
             var    textSize = ImGui.CalcTextSize(text);
             float  height   = 22f;
             float  pillW    = textSize.X + 24f;
-            float  badgeRight = cpDotCenter.X - 12f;
+            float  badgeRight = menuMin.X - 14f;
             var    max      = new Vector2(badgeRight, barMin.Y + (TitleBarHeight + height) / 2f);
             var    min       = new Vector2(max.X - pillW, barMin.Y + (TitleBarHeight - height) / 2f);
 
@@ -332,20 +325,57 @@ internal static class Theme
         return (closeClicked, collapseClicked, menuClicked);
     }
 
-    /// <summary>A small colored dot with a hover tooltip, no visible label, since the title bar is too narrow for a full text status line.</summary>
-    private static void DrawTitleBarStatusDot(ImDrawListPtr drawList, Vector2 center, bool ok, string tooltip)
+    // ── Custom footer ─────────────────────────────────────────────────────────
+    // Sits below the tab content on every tab (unlike the old per-tab command hint / dependency
+    // banners, which only Player's Single tab and Gpose's gated sections happened to draw). The
+    // caller reserves this height by sizing its content Child to (0, -FooterHeight) before calling
+    // this, then calls DrawCustomFooter once the Child has ended.
+
+    public const float FooterHeight = 38f;
+
+    /// <summary>
+    /// Draws BodyFlux's custom footer: full-text Customize+/Brio dependency status (promoted here
+    /// from the title bar, which only had room for a bare dot) and the "/bodyflux" chat-command
+    /// reminder, right-aligned. Call once per frame, after the tab content's Child has ended.
+    /// </summary>
+    public static void DrawCustomFooter(bool cpOk, bool brioOk)
     {
-        const float r = 4f, hitR = 8f;
+        var drawList = ImGui.GetWindowDrawList();
+        var winPos   = ImGui.GetWindowPos();
+        var winSize  = ImGui.GetWindowSize();
+        var barMax   = winPos + winSize;
+        var barMin   = new Vector2(winPos.X, barMax.Y - FooterHeight);
 
-        ImGui.SetCursorScreenPos(center - new Vector2(hitR, hitR));
-        ImGui.Dummy(new Vector2(hitR * 2f, hitR * 2f));
-        bool hovered = ImGui.IsItemHovered();
+        // Same darkened background + hairline border treatment as the title bar, just anchored to
+        // the bottom corners instead of the top ones.
+        var barBg = new Vector4(WindowBg.X * 0.82f, WindowBg.Y * 0.82f, WindowBg.Z * 0.82f, 1f);
+        drawList.AddRectFilled(barMin, barMax, ImGui.GetColorU32(barBg), 16f, ImDrawFlags.RoundCornersBottom);
+        drawList.AddLine(barMin, new Vector2(barMax.X, barMin.Y), ImGui.GetColorU32(Border));
 
-        drawList.AddCircleFilled(center, r, ImGui.GetColorU32(ok ? Success : Danger));
+        const float edgePad = 18f;
+        float y = barMin.Y + FooterHeight / 2f;
 
-        if (!hovered) return;
-        ImGui.BeginTooltip();
-        ImGui.TextUnformatted(tooltip);
-        ImGui.EndTooltip();
+        float x = barMin.X + edgePad;
+        x = DrawFooterStatus(drawList, new Vector2(x, y), cpOk, "Customize+ Enabled", "Customize+ Not Detected");
+        DrawFooterStatus(drawList, new Vector2(x + 18f, y), brioOk, "Brio Enabled", "Brio Not Detected");
+
+        const string cmd = "/bodyflux";
+        var cmdSize = ImGui.CalcTextSize(cmd);
+        var cmdPos  = new Vector2(barMax.X - edgePad - cmdSize.X, y - cmdSize.Y / 2f);
+        drawList.AddText(cmdPos, ImGui.GetColorU32(TextMuted), cmd);
+    }
+
+    /// <summary>Draws one "dot + label" dependency status entry, vertically centered on <paramref name="start"/>.Y. Returns the X just past the label's right edge, for chaining the next entry.</summary>
+    private static float DrawFooterStatus(ImDrawListPtr drawList, Vector2 start, bool ok, string onLabel, string offLabel)
+    {
+        const float r = 4f;
+        var dotCenter = new Vector2(start.X + r, start.Y);
+        drawList.AddCircleFilled(dotCenter, r, ImGui.GetColorU32(ok ? Success : Danger));
+
+        string label    = ok ? onLabel : offLabel;
+        var    textPos  = new Vector2(dotCenter.X + r + 6f, start.Y - ImGui.GetTextLineHeight() / 2f);
+        drawList.AddText(textPos, ImGui.GetColorU32(TextMuted), label);
+
+        return textPos.X + ImGui.CalcTextSize(label).X;
     }
 }

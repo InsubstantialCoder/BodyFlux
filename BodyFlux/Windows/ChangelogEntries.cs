@@ -10,6 +10,12 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 7, 1, 1), "Custom Footer",
+        [
+            "Added a custom footer, shown on every tab, with the /bodyflux command reminder.",
+            "Moved the Customize+ and Brio status indicators from the title bar down to the " +
+                "footer, now shown with full text instead of a bare dot.",
+        ]),
         new ChangelogEntry(new Version(0, 7, 1, 0), "Added Changelog Info",
         [
             "Added Changelog Window on first open after new version and Changelog tab to review the history of previous versions.",
