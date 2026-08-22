@@ -278,25 +278,24 @@ public sealed class BrioTabView
     private void DrawBrioRightColumn(Configuration config)
     {
         // ── Speed ─────────────────────────────────────────────────────────────
-        float speed = config.BrioGrowthSpeed;
-        UiHelpers.SectionLabel("Growth Speed:",
-            "How fast the morph plays, in Customize+ range units per second, higher is faster. " +
-            "\"Time to complete\" below shows what that works out to at the current speed.");
+        float timeSeconds = config.BrioGrowthSpeed > 0f ? 1f / config.BrioGrowthSpeed : 100f;
+        UiHelpers.SectionLabel("Morph Time:",
+            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "Ctrl+Click the slider to type an exact value.");
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-        if (UiHelpers.GradientSlider("##BrioGrowthSpeed", ref speed, 0.01f, 1f, "%.2f range/sec"))
+        if (UiHelpers.GradientSlider("##BrioGrowthSpeed", ref timeSeconds, 0.10f, 100f, "%.2f s", ImGuiSliderFlags.Logarithmic))
         {
-            config.BrioGrowthSpeed = speed;
+            config.BrioGrowthSpeed = timeSeconds > 0f ? 1f / timeSeconds : 0.01f;
             config.Save();
         }
 
-        float secs = speed > 0f ? 1f / speed : float.PositiveInfinity;
-        ImGui.TextDisabled($"Time to complete: {secs:F1}s");
+        ImGui.TextDisabled($"Time to complete: {timeSeconds:F2}s   •   Speed: {config.BrioGrowthSpeed:F2} range/sec");
 
         ImGui.Spacing();
         ImGui.Spacing();
 
         // ── Mode selector ─────────────────────────────────────────────────────
-        UiHelpers.SectionLabel("Morph Mode:",
+        UiHelpers.SectionLabel("Morph Loop:",
             "Simple morphs from the actor's current profile to the destination once. Loop (x1) " +
             "morphs there and reverses back once. Loop (∞) continuously ping-pongs between " +
             "the starting and destination profiles until Reset is pressed.");
@@ -518,26 +517,38 @@ public sealed class BrioTabView
         if (_group.Count == 0)
             ImGui.TextDisabled("No actors configured yet — add one above.");
 
-        // ── Per-actor config rows ─────────────────────────────────────────────
+        // ── Per-actor config cards, 2-column grid (mirrors Sync's peer grid) ────
         int removeIdx = -1;
-        for (int i = 0; i < _group.Count; i++)
+        using (ImRaii.PushStyle(ImGuiStyleVar.CellPadding,
+                   new Vector2(10 * scale, 8 * scale)))
+        using (var table = ImRaii.Table("##GroupGrid", 2))
         {
-            var g = _group[i];
-            ImGui.PushID(i);
-
-            var    found   = actors.Find(a => a.Index == g.ActorIndex);
-            string name    = found.Name ?? "(not in scene)";
-            bool   active  = plugin.IsBrioActorActive(g.ActorIndex);
-
-            string header = $"[{g.ActorIndex}] {name}" + (active ? "  (morphing)" : "");
-            if (ImGui.CollapsingHeader($"{header}##grphdr{i}", ImGuiTreeNodeFlags.DefaultOpen))
+            if (table)
             {
-                ImGui.Indent(12 * scale);
-                DrawGroupEntryEditor(g, i, bw, scale, ref removeIdx);
-                ImGui.Unindent(12 * scale);
-            }
+                ImGui.TableSetupColumn("##a", ImGuiTableColumnFlags.WidthStretch, 1f);
+                ImGui.TableSetupColumn("##b", ImGuiTableColumnFlags.WidthStretch, 1f);
 
-            ImGui.PopID();
+                for (int i = 0; i < _group.Count; i++)
+                {
+                    var g = _group[i];
+                    ImGui.TableNextColumn();
+                    ImGui.PushID(i);
+
+                    var    found  = actors.Find(a => a.Index == g.ActorIndex);
+                    string name   = found.Name ?? "(not in scene)";
+                    bool   active = plugin.IsBrioActorActive(g.ActorIndex);
+                    string header = $"[{g.ActorIndex}] {name}" + (active ? "  (morphing)" : "");
+
+                    bool removeRequested = false;
+                    UiHelpers.Card(innerWidth =>
+                    {
+                        if (DrawGroupEntryEditor(g, bw, scale, header, innerWidth)) removeRequested = true;
+                    });
+                    if (removeRequested) removeIdx = i;
+
+                    ImGui.PopID();
+                }
+            }
         }
         if (removeIdx >= 0)
         {
@@ -601,21 +612,37 @@ public sealed class BrioTabView
         }
     }
 
-    /// <summary>Draws the config editor for one group entry (destination, MCDF, speed, mode, easing).</summary>
-    private void DrawGroupEntryEditor(GroupEntry g, int index, float bw, float scale, ref int removeIdx)
+    /// <summary>
+    /// Draws the config editor for one group entry (destination, MCDF, speed, mode, easing) inside a
+    /// <see cref="UiHelpers.Card"/>. Returns true if this entry's Remove was clicked, since a ref
+    /// out-param can't be captured by the Card's content lambda.
+    /// </summary>
+    private bool DrawGroupEntryEditor(GroupEntry g, float bw, float scale, string header, float innerWidth)
     {
+        // GetContentRegionAvail() inside a Card reports width against the raw cell edge, not the
+        // card's own right inset (Indent only accounts for the left side of Card's padding), so any
+        // "rest of the row" width for a same-line widget must be measured from innerWidth instead —
+        // otherwise it draws flush against the card's border. leftX anchors that measurement.
+        float leftX = ImGui.GetCursorPosX();
+        float Remaining() => innerWidth - (ImGui.GetCursorPosX() - leftX);
+        bool  removeRequested = false;
+
+        ImGui.TextUnformatted(header);
+        ImGui.Spacing();
+
         // ── Target mode ────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Target:", null);
         ImGui.SameLine();
         int grpTargetModeInt = (int)g.TargetMode;
-        if (UiHelpers.ButtonGroup("grptgt", GroupTargetLabels, ref grpTargetModeInt))
+        if (UiHelpers.ButtonGroup("grptgt", GroupTargetLabels, ref grpTargetModeInt, Remaining()))
             g.TargetMode = (MorphTargetMode)grpTargetModeInt;
+        ImGui.Spacing();
 
         // ── Destination ───────────────────────────────────────────────────────
         bool grpOverlay = g.TargetMode == MorphTargetMode.TemplateOverlay;
         UiHelpers.SectionLabel(grpOverlay ? "Overlay:" : "Destination:", null);
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        ImGui.SetNextItemWidth(Remaining());
         if (grpOverlay)
         {
             var names = plugin.SavedTemplates.Select(t => t.Name).ToList();
@@ -632,6 +659,7 @@ public sealed class BrioTabView
                 ref idx, ref _groupProfileFilter, "— select a profile —");
             g.DestIndex = idx;
         }
+        ImGui.Spacing();
 
         // ── MCDF origin ───────────────────────────────────────────────────────
         if (ImGui.Button("Load MCDF...##grp"))
@@ -662,21 +690,28 @@ public sealed class BrioTabView
             ImGui.TextColored(new Vector4(0.9f, 0.3f, 0.3f, 1f), g.OriginMcdfLabel);
         else
             ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1f), "no MCDF — starts unscaled/permanent");
+        ImGui.Spacing();
 
         // ── Speed ─────────────────────────────────────────────────────────────
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 60 * scale);
-        float sp = g.Speed;
-        if (UiHelpers.GradientSlider("Speed##grp", ref sp, 0.01f, 1f, "%.2f")) g.Speed = sp;
+        UiHelpers.SectionLabel("Morph Time:",
+            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "Ctrl+Click the slider to type an exact value.");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(Remaining());
+        float spTime = g.Speed > 0f ? 1f / g.Speed : 100f;
+        if (UiHelpers.GradientSlider("##grpspd", ref spTime, 0.10f, 100f, "%.2f s", ImGuiSliderFlags.Logarithmic))
+            g.Speed = spTime > 0f ? 1f / spTime : 0.01f;
 
-        float grpSecs = g.Speed > 0f ? 1f / g.Speed : float.PositiveInfinity;
-        ImGui.TextDisabled($"Time to complete: {grpSecs:F1}s");
+        ImGui.TextDisabled($"Time to complete: {spTime:F2}s   •   Speed: {g.Speed:F2} range/sec");
+        ImGui.Spacing();
 
         // ── Mode ──────────────────────────────────────────────────────────────
-        UiHelpers.SectionLabel("Mode:", null);
+        UiHelpers.SectionLabel("Morph Loop:", null);
         ImGui.SameLine();
         int modeInt = (int)g.Mode;
-        if (UiHelpers.ButtonGroup("grpm", UiHelpers.MorphModeLabels, ref modeInt))
+        if (UiHelpers.ButtonGroup("grpm", UiHelpers.MorphModeLabels, ref modeInt, Remaining()))
             g.Mode = (MorphMode)modeInt;
+        ImGui.Spacing();
 
         // ── Easing ────────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Easing:", null);
@@ -689,6 +724,7 @@ public sealed class BrioTabView
             g.Easing = gMode;
             g.EasingCurveId = gCurveId;
         }
+        ImGui.Spacing();
 
         // ── Live progress (when this actor is morphing) + remove ──────────────
         if (plugin.IsBrioActorActive(g.ActorIndex))
@@ -697,8 +733,9 @@ public sealed class BrioTabView
             UiHelpers.GradientProgressBar(prog, new Vector2(-1, 14 * scale), $"{prog * 100f:F0}%");
         }
 
-        if (UiHelpers.DangerButton("Remove##grp", new Vector2(bw, 0))) removeIdx = index;
-        ImGui.Spacing();
+        if (UiHelpers.DangerButton("Remove##grp", new Vector2(bw, 0))) removeRequested = true;
+
+        return removeRequested;
     }
 
     private void DrawPresetsTab()

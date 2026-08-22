@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Text.RegularExpressions;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Utility.Raii;
 using BodyFlux.Morph;
@@ -300,12 +301,14 @@ internal static class UiHelpers
     /// <summary>
     /// A <c>SliderFloat</c> repainted with a violet→teal gradient fill and a glowing white grab;
     /// the native widget still owns dragging/keyboard input and the centered value text, only its
-    /// paint is replaced. The fill is drawn from the pre-drag value so the format text renders on
-    /// top of it rather than under the grab's glow. Respects a preceding <c>SetNextItemWidth</c>
+    /// paint is replaced. The fill and grab are both drawn from the pre-drag value, before the
+    /// native call, so the format text (drawn by the native widget itself) always renders on top of
+    /// them instead of being covered by the grab's glow. Respects a preceding <c>SetNextItemWidth</c>
     /// (via <c>CalcItemWidth</c>) instead of always taking the full row, same as the native widget
     /// it replaces, since some call sites reserve room for a trailing label.
     /// </summary>
-    public static bool GradientSlider(string label, ref float value, float min, float max, string format)
+    public static bool GradientSlider(string label, ref float value, float min, float max, string format,
+        ImGuiSliderFlags flags = ImGuiSliderFlags.None)
     {
         var   drawList = ImGui.GetWindowDrawList();
         float width    = ImGui.CalcItemWidth();
@@ -313,9 +316,40 @@ internal static class UiHelpers
         var   rectMin  = ImGui.GetCursorScreenPos();
         var   rectMax  = rectMin + new Vector2(width, height);
         float rounding = ImGui.GetStyle().FrameRounding;
+        bool  logarithmic = (flags & ImGuiSliderFlags.Logarithmic) != 0 && min > 0f && max > 0f;
+        float frac        = SliderFraction(value, min, max, logarithmic); // pre-drag value
 
-        PaintTrackAndFill(drawList, rectMin, rectMax, rounding,
-            Math.Clamp((value - min) / (max - min), 0f, 1f)); // pre-drag value; native call below draws its text on top of this
+        PaintTrackAndFill(drawList, rectMin, rectMax, rounding, frac);
+
+        // Grab glow/dot painted BEFORE the native call (not after) so the native centered value
+        // text — drawn inside SliderFloat itself — always lands on top of it instead of being
+        // covered by the grab; same pre-drag-position tradeoff PaintTrackAndFill already makes.
+        float grabR = height / 2f - 1f;
+        // Inset by the grab's own radius (matching how ImGui positions its own, invisible, grab)
+        // so the circle stays fully inside the frame at frac 0/1 instead of being sliced in half
+        // by the rounded border.
+        float grabX = rectMin.X + grabR + (rectMax.X - rectMin.X - 2f * grabR) * frac;
+        var   grabCenter = new Vector2(grabX, (rectMin.Y + rectMax.Y) / 2f);
+
+        for (int i = 3; i >= 1; i--)
+            drawList.AddCircleFilled(grabCenter, grabR + i * 2.5f,
+                ImGui.GetColorU32(new Vector4(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z, 0.05f)));
+        drawList.AddCircleFilled(grabCenter, grabR, ImGui.GetColorU32(Vector4.One));
+        drawList.AddCircle(grabCenter, grabR, ImGui.GetColorU32(new Vector4(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z, 0.5f)), 0, 2f);
+
+        // Dark pill behind where the native value text will render, sized to the widest string this
+        // slider can show (formatted at `max`) so it doesn't jitter as the live value's width
+        // changes. Keeps the near-white text legible over the white grab (and the pastel fill)
+        // without recoloring the grab itself, which looked out of place against the violet→teal
+        // palette (tried Theme.AccentActive — too saturated a purple next to the pastel gradient).
+        string  sample     = FormatSliderValueForSizing(format, max);
+        var     textSize   = ImGui.CalcTextSize(sample);
+        var     padding    = new Vector2(6f, 2f);
+        var     bgMin      = new Vector2(rectMin.X + (width - textSize.X) / 2f - padding.X,
+            rectMin.Y + (height - textSize.Y) / 2f - padding.Y);
+        var     bgMax      = bgMin + textSize + padding * 2f;
+        drawList.AddRectFilled(bgMin, bgMax, ImGui.GetColorU32(new Vector4(Theme.TrackBg.X, Theme.TrackBg.Y, Theme.TrackBg.Z, 0.75f)),
+            (bgMax.Y - bgMin.Y) / 2f);
 
         bool changed;
         using (ImRaii.PushColor(ImGuiCol.FrameBg, Vector4.Zero)
@@ -324,20 +358,30 @@ internal static class UiHelpers
                    .Push(ImGuiCol.SliderGrab, Vector4.Zero)
                    .Push(ImGuiCol.SliderGrabActive, Vector4.Zero))
         {
-            changed = ImGui.SliderFloat(label, ref value, min, max, format);
+            changed = ImGui.SliderFloat(label, ref value, min, max, format, flags);
         }
 
-        float frac2 = Math.Clamp((value - min) / (max - min), 0f, 1f);
-        var   grabCenter = new Vector2(rectMin.X + (rectMax.X - rectMin.X) * frac2, (rectMin.Y + rectMax.Y) / 2f);
-        float grabR = height / 2f - 1f;
-
-        for (int i = 3; i >= 1; i--)
-            drawList.AddCircleFilled(grabCenter, grabR + i * 2.5f,
-                ImGui.GetColorU32(new Vector4(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z, 0.05f)));
-        drawList.AddCircleFilled(grabCenter, grabR, ImGui.GetColorU32(Vector4.One));
-        drawList.AddCircle(grabCenter, grabR, ImGui.GetColorU32(new Vector4(Theme.Accent.X, Theme.Accent.Y, Theme.Accent.Z, 0.5f)), 0, 2f);
-
         return changed;
+    }
+
+    /// <summary>
+    /// Renders a printf-style <c>"%.Nf"</c> float format (the only spec <see cref="GradientSlider"/>
+    /// callers use, e.g. <c>"%.2f s"</c>) for sizing the value-text backdrop only — doesn't need to
+    /// match the native C-runtime formatting character-for-character, just close enough in width.
+    /// </summary>
+    private static string FormatSliderValueForSizing(string cFormat, float value) =>
+        Regex.Replace(cFormat, @"%\.(\d+)f", m => value.ToString("F" + m.Groups[1].Value));
+
+    /// <summary>
+    /// Grab-position fraction for <see cref="GradientSlider"/>, matching ImGui's own internal
+    /// logarithmic mapping (<c>log(value/min) / log(max/min)</c>) when the Logarithmic flag is set,
+    /// so the hand-painted fill/grab line up with where the native (invisible) slider actually is.
+    /// </summary>
+    private static float SliderFraction(float value, float min, float max, bool logarithmic)
+    {
+        if (logarithmic)
+            return Math.Clamp(MathF.Log(Math.Max(value, min) / min) / MathF.Log(max / min), 0f, 1f);
+        return Math.Clamp((value - min) / (max - min), 0f, 1f);
     }
 
     /// <summary>

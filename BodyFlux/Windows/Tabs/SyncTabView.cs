@@ -289,6 +289,7 @@ public sealed class SyncTabView
         float Remaining() => innerWidth - (ImGui.GetCursorPosX() - leftX);
 
         ImGui.TextUnformatted(peerName);
+        ImGui.Spacing();
 
         // ── Target mode ────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Target:", null);
@@ -296,6 +297,7 @@ public sealed class SyncTabView
         int targetModeInt = (int)cfg.TargetMode;
         if (UiHelpers.ButtonGroup("tgt", TargetModeLabels, ref targetModeInt, Remaining()))
             cfg.TargetMode = (MorphTargetMode)targetModeInt;
+        ImGui.Spacing();
 
         // ── Destination ───────────────────────────────────────────────────────
         bool overlay = cfg.TargetMode == MorphTargetMode.TemplateOverlay;
@@ -318,23 +320,28 @@ public sealed class SyncTabView
                 ref idx, ref _targetProfileFilter, "— select a profile —");
             cfg.DestIndex = idx;
         }
+        ImGui.Spacing();
 
         // ── Speed ─────────────────────────────────────────────────────────────
-        UiHelpers.SectionLabel("Speed:", null);
+        UiHelpers.SectionLabel("Morph Time:",
+            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "Ctrl+Click the slider to type an exact value.");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(Remaining());
-        float sp = cfg.Speed;
-        if (UiHelpers.GradientSlider("##speed", ref sp, 0.01f, 1f, "%.2f")) cfg.Speed = sp;
+        float spTime = cfg.Speed > 0f ? 1f / cfg.Speed : 100f;
+        if (UiHelpers.GradientSlider("##speed", ref spTime, 0.10f, 100f, "%.2f s", ImGuiSliderFlags.Logarithmic))
+            cfg.Speed = spTime > 0f ? 1f / spTime : 0.01f;
 
-        float secs = cfg.Speed > 0f ? 1f / cfg.Speed : float.PositiveInfinity;
-        ImGui.TextDisabled($"Time to complete: {secs:F1}s");
+        ImGui.TextDisabled($"Time to complete: {spTime:F2}s   •   Speed: {cfg.Speed:F2} range/sec");
+        ImGui.Spacing();
 
         // ── Mode ──────────────────────────────────────────────────────────────
-        UiHelpers.SectionLabel("Mode:", null);
+        UiHelpers.SectionLabel("Morph Loop:", null);
         ImGui.SameLine();
         int modeInt = (int)cfg.Mode;
         if (UiHelpers.ButtonGroup("mode", UiHelpers.MorphModeLabels, ref modeInt, Remaining()))
             cfg.Mode = (MorphMode)modeInt;
+        ImGui.Spacing();
 
         // ── Easing ────────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Easing:", null);

@@ -10,6 +10,23 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 8, 1, 0), "Faster Morphs & Layout Refresh",
+        [
+            "Morph speed sliders (Single, Gpose, Sync, Sequences) now go well past the old " +
+                "1-second floor, down to 0.10s, and Sequences no longer clamps a typed value back " +
+                "below 1s the way it used to; Single already allowed this by typing manually, it's " +
+                "now consistent everywhere.",
+            "Speed sliders are driven directly by \"Morph Time\" in seconds instead of an internal " +
+                "range/sec figure, with a logarithmic curve for finer control at the low end. " +
+                "Ctrl+Click the slider to type an exact value.",
+            "Fixed the slider's value text getting covered by its own grab dot, and the grab being " +
+                "clipped in half at the very ends of the track.",
+            "Renamed \"Growth Speed\"/\"Speed\" to \"Morph Time\" and \"Mode\" to \"Morph Loop\" " +
+                "across every tab.",
+            "Reworked the Gpose Multi tab to use the same card-based 2-column grid as the Sync tab, " +
+                "instead of a single stacked column of collapsible headers, with more breathing room " +
+                "between controls (also applied to Sync's peer cards).",
+        ]),
         new ChangelogEntry(new Version(0, 8, 0, 0), "Multi-Target Sync Morphing",
         [
             "Each connected, consenting peer in the Sync tab's grid now has its own morph config " +

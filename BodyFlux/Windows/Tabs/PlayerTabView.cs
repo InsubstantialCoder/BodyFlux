@@ -220,19 +220,18 @@ public sealed class PlayerTabView
 
     private void DrawGrowthSpeed(Configuration config)
     {
-        float speed = config.GrowthSpeed;
-        UiHelpers.SectionLabel("Growth Speed:",
-            "How fast the morph plays, in Customize+ range units per second, higher is faster. " +
-            "\"Time to complete\" below shows what that works out to at the current speed.");
+        float timeSeconds = config.GrowthSpeed > 0f ? 1f / config.GrowthSpeed : 100f;
+        UiHelpers.SectionLabel("Morph Time:",
+            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "Ctrl+Click the slider to type an exact value.");
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
-        if (UiHelpers.GradientSlider("##GrowthSpeed", ref speed, 0.01f, 1f, "%.2f range/sec"))
+        if (UiHelpers.GradientSlider("##GrowthSpeed", ref timeSeconds, 0.10f, 100f, "%.2f s", ImGuiSliderFlags.Logarithmic))
         {
-            config.GrowthSpeed = speed;
+            config.GrowthSpeed = timeSeconds > 0f ? 1f / timeSeconds : 0.01f;
             config.Save();
         }
 
-        float seconds = speed > 0f ? 1f / speed : float.PositiveInfinity;
-        ImGui.TextDisabled($"Time to complete: {seconds:F1}s");
+        ImGui.TextDisabled($"Time to complete: {timeSeconds:F2}s   •   Speed: {config.GrowthSpeed:F2} range/sec");
     }
 
     private void DrawMorphTargetSelector(Configuration config)
@@ -260,7 +259,7 @@ public sealed class PlayerTabView
     {
         bool busy = plugin.IsMorphing;
 
-        UiHelpers.SectionLabel("Morph Mode:",
+        UiHelpers.SectionLabel("Morph Loop:",
             "Simple morphs from your current profile to the destination once. Loop (x1) morphs " +
             "to the destination, then reverses back to the starting profile once. Loop (∞) " +
             "continuously ping-pongs between the starting and destination profiles until Reset is pressed.");

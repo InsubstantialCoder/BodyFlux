@@ -132,12 +132,18 @@ public sealed class SequenceListView
             ImGui.Indent(28 * scale);
 
             ImGui.SetNextItemWidth(170 * scale);
-            float sp = step.Speed;
+            float spTime = step.Speed > 0f ? 1f / step.Speed : 100f;
             using (ImRaii.Disabled(busy))
             {
                 // A labelled slider (not a drag field) so it's obvious this is the morph speed.
-                if (UiHelpers.GradientSlider("##spd", ref sp, 0.01f, 1f, "Speed: %.2f/s"))
-                    seq.Steps[i] = step with { Speed = Math.Clamp(sp, 0.01f, 1f) };
+                if (UiHelpers.GradientSlider("##spd", ref spTime, 0.10f, 100f, "Time: %.2fs", ImGuiSliderFlags.Logarithmic))
+                {
+                    float newSpeed = spTime > 0f ? 1f / spTime : 0.01f;
+                    seq.Steps[i] = step with { Speed = Math.Clamp(newSpeed, 0.01f, 10f) };
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("How long this step takes to complete, in seconds — lower is faster. " +
+                                      "Ctrl+Click to type an exact value.");
                 if (ImGui.IsItemDeactivatedAfterEdit()) needSave = true;
             }
 
@@ -162,9 +168,9 @@ public sealed class SequenceListView
             using (ImRaii.Disabled(busy))
                 if (UiHelpers.DangerButton("Remove", Vector2.Zero)) removeIdx = i;
 
-            // Time to complete this step at its current speed (mirrors the Single tab).
-            float stepSecs = seq.Steps[i].Speed > 0f ? 1f / seq.Steps[i].Speed : float.PositiveInfinity;
-            ImGui.TextDisabled($"Time to complete: {stepSecs:F1}s");
+            // Mirrors the Single tab: both units, since the slider above only shows one at a time.
+            float stepTimeSeconds = seq.Steps[i].Speed > 0f ? 1f / seq.Steps[i].Speed : float.PositiveInfinity;
+            ImGui.TextDisabled($"Time to complete: {stepTimeSeconds:F2}s   •   Speed: {seq.Steps[i].Speed:F2} range/sec");
 
             ImGui.Unindent(28 * scale);
             ImGui.PopID();
