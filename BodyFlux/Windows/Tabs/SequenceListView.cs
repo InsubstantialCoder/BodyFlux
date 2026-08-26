@@ -142,7 +142,7 @@ public sealed class SequenceListView
                     seq.Steps[i] = step with { Speed = Math.Clamp(newSpeed, 0.01f, 10f) };
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("How long this step takes to complete, in seconds — lower is faster. " +
+                    ImGui.SetTooltip("How long this step takes to complete, in seconds, lower is faster. " +
                                       "Ctrl+Click to type an exact value.");
                 if (ImGui.IsItemDeactivatedAfterEdit()) needSave = true;
             }

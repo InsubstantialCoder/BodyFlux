@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Dalamud.Plugin.Services;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using BodyFlux.Services;
 
 namespace BodyFlux.Network;
 
@@ -71,7 +72,10 @@ public sealed class NetworkSync : IDisposable
     private readonly ConcurrentDictionary<string, bool> _peerConsent = new();
 
     /// <summary>
-    /// Map of peer ids → whether they have enabled "allow remote morph".
+    /// Map of peer ids → whether they are requestable at all (their local mode != Off). Only this
+    /// coarse bool crosses the relay today, the Ask/Auto distinction is decided purely by the
+    /// receiver locally (see <see cref="Services.SyncManager"/>) and never needs to reach the
+    /// sender, so there is no reason to widen the wire format for it.
     /// Updated whenever a hello or heartbeat is received from that peer.
     /// </summary>
     public IReadOnlyDictionary<string, bool> PeerConsent => _peerConsent;
@@ -101,11 +105,11 @@ public sealed class NetworkSync : IDisposable
 
     // ── Local consent ─────────────────────────────────────────────────────────
     /// <summary>
-    /// Whether this player allows others to morph their character.
-    /// Set this before or after construction; it is included in every hello message.
+    /// This player's own policy for incoming morph requests (Off/Ask/Auto).
+    /// Set this before or after construction; it is included in every message.
     /// Call <see cref="SendHello"/> after changing to propagate immediately.
     /// </summary>
-    public bool LocalConsent { get; set; }
+    public ConsentMode LocalConsentMode { get; set; } = ConsentMode.Off;
 
     /// <summary>
     /// This player's base Customize+ scaling (permanent profile JSON), shared with peers in
@@ -376,7 +380,7 @@ public sealed class NetworkSync : IDisposable
         => _outbound.Enqueue(BuildMessage("stop", null, target));
 
     /// <summary>
-    /// Immediately broadcasts a hello message with the current <see cref="LocalConsent"/>
+    /// Immediately broadcasts a hello message with the current <see cref="LocalConsentMode"/>
     /// value so peers learn about consent changes without waiting for the next heartbeat.
     /// </summary>
     public void SendHello()
@@ -419,7 +423,9 @@ public sealed class NetworkSync : IDisposable
 
     private string BuildMessage(string type, string? profile, string? target = null, bool includeBase = true)
     {
-        var obj = new JObject { ["sender"] = _localId, ["type"] = type, ["consent"] = LocalConsent };
+        // Only Off/not-Off ("consent") crosses the wire, Ask vs Auto is a purely local decision
+        // the receiver makes on its own incoming request, so the sender never needs to know it.
+        var obj = new JObject { ["sender"] = _localId, ["type"] = type, ["consent"] = LocalConsentMode != ConsentMode.Off };
         // Profile payloads are stripped to {ID,Name,Bones} and DEFLATE+base64-packed; "enc" marks
         // the packed fields so the receiver knows to unpack them. See ProfileWire.
         if (profile != null) { obj["profile"] = ProfileWire.Pack(ProfileWire.Minimize(profile)); obj["enc"] = "d"; }

@@ -10,6 +10,17 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 8, 2, 0), "Allow Morph Requests Rework",
+        [
+            "\"Allow others to morph my character\" is now a 3-way \"Allow Morph Requests\" " +
+                "choice: Off (unreachable, as before), Ask (the default, every request still " +
+                "needs your explicit Accept/Deny, unchanged from before), or Auto (requests from " +
+                "anyone with your Sync Key are granted instantly, no prompt).",
+            "The Sync tab's Connected Users grid now always shows every current member of your " +
+                "Sync Key, not just those who accept requests. A peer with Requests set to Off " +
+                "just has their Request/Apply button disabled with a tooltip explaining why, " +
+                "instead of disappearing from the grid.",
+        ]),
         new ChangelogEntry(new Version(0, 8, 1, 0), "Faster Morphs & Layout Refresh",
         [
             "Morph speed sliders (Single, Gpose, Sync, Sequences) now go well past the old " +

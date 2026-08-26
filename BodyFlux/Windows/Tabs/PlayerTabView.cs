@@ -222,7 +222,7 @@ public sealed class PlayerTabView
     {
         float timeSeconds = config.GrowthSpeed > 0f ? 1f / config.GrowthSpeed : 100f;
         UiHelpers.SectionLabel("Morph Time:",
-            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "How long the morph takes to complete, in seconds, lower is faster. " +
             "Ctrl+Click the slider to type an exact value.");
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         if (UiHelpers.GradientSlider("##GrowthSpeed", ref timeSeconds, 0.10f, 100f, "%.2f s", ImGuiSliderFlags.Logarithmic))

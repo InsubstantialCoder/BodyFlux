@@ -280,7 +280,7 @@ public sealed class BrioTabView
         // ── Speed ─────────────────────────────────────────────────────────────
         float timeSeconds = config.BrioGrowthSpeed > 0f ? 1f / config.BrioGrowthSpeed : 100f;
         UiHelpers.SectionLabel("Morph Time:",
-            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "How long the morph takes to complete, in seconds, lower is faster. " +
             "Ctrl+Click the slider to type an exact value.");
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         if (UiHelpers.GradientSlider("##BrioGrowthSpeed", ref timeSeconds, 0.10f, 100f, "%.2f s", ImGuiSliderFlags.Logarithmic))
@@ -621,8 +621,8 @@ public sealed class BrioTabView
     {
         // GetContentRegionAvail() inside a Card reports width against the raw cell edge, not the
         // card's own right inset (Indent only accounts for the left side of Card's padding), so any
-        // "rest of the row" width for a same-line widget must be measured from innerWidth instead —
-        // otherwise it draws flush against the card's border. leftX anchors that measurement.
+        // "rest of the row" width for a same-line widget must be measured from innerWidth instead.
+        // Otherwise it draws flush against the card's border. leftX anchors that measurement.
         float leftX = ImGui.GetCursorPosX();
         float Remaining() => innerWidth - (ImGui.GetCursorPosX() - leftX);
         bool  removeRequested = false;
@@ -694,7 +694,7 @@ public sealed class BrioTabView
 
         // ── Speed ─────────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Morph Time:",
-            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "How long the morph takes to complete, in seconds, lower is faster. " +
             "Ctrl+Click the slider to type an exact value.");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(Remaining());

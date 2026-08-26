@@ -40,6 +40,9 @@ public sealed class SyncTabView
     // (mirrors BrioTabView's GroupTargetLabels).
     private static readonly string[] TargetModeLabels = ["Full", "Overlay"];
 
+    // Off/Ask/Auto, indexed by (int)ConsentMode.
+    private static readonly string[] ConsentModeLabels = ["Off", "Ask", "Auto"];
+
     public SyncTabView(Plugin plugin) => this.plugin = plugin;
 
     private static string GeneratePairKey()
@@ -74,28 +77,29 @@ public sealed class SyncTabView
 
         // ── Enable toggle ─────────────────────────────────────────────────────
         bool syncEnabled = config.NetworkSyncEnabled;
-        if (ImGui.Checkbox("Enable Group Sync", ref syncEnabled))
+        UiHelpers.SectionLabel("Enable Group Sync:",
+            "Turns Sync on for this session. Once enabled, generate or enter a Sync Key below and " +
+            "press Connect to start sharing morphs with your partner(s) in real time.");
+        ImGui.SameLine();
+        if (ImGui.Checkbox("##EnableGroupSync", ref syncEnabled))
         {
             config.NetworkSyncEnabled = syncEnabled;
             config.Save();
             if (!syncEnabled)
                 plugin.DisconnectNetworkSync();
         }
-        ImGui.SameLine();
-        UiHelpers.DrawHelpIcon(
-            "Turns Sync on for this session. Once enabled, generate or enter a Sync Key below and " +
-            "press Connect to start sharing morphs with your partner(s) in real time.");
 
         ImGui.Spacing();
 
-        bool allowRemote = plugin.AllowRemoteMorph;
-        if (ImGui.Checkbox("Allow others to morph my character", ref allowRemote))
-            plugin.AllowRemoteMorph = allowRemote;
+        UiHelpers.SectionLabel("Allow Morph Requests:",
+            "Off: no one can request to morph you, your Request button is disabled on every " +
+            "other player's client. Ask: connected players can send a request, but you always get " +
+            "an Accept/Deny prompt for each one (the default). Auto: requests from anyone with your " +
+            "Sync Key are granted immediately, no prompt.");
         ImGui.SameLine();
-        UiHelpers.DrawHelpIcon(
-            "When enabled, connected players with your Sync Key can send you a request to apply a " +
-            "morph profile to your character. This does not apply anything automatically, you still " +
-            "get an Accept/Deny prompt for every individual request and can deny it.");
+        int consentModeInt = (int)plugin.MorphRequestMode;
+        if (UiHelpers.ButtonGroup("ConsentMode", ConsentModeLabels, ref consentModeInt))
+            plugin.MorphRequestMode = (ConsentMode)consentModeInt;
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -195,8 +199,10 @@ public sealed class SyncTabView
         if (maxPeers.HasValue)
             ImGui.TextDisabled($"Up to {maxPeers} players can share the same Sync Key simultaneously.");
         UiHelpers.SectionLabel("Connected Users:",
-            "Configure a destination, speed, mode and easing for each connected, consenting peer, " +
-            "then Request that card on its own or use Request All below to ask several at once.");
+            "Every current member of your Sync Key. Configure a destination, speed, mode and " +
+            "easing for any of them, then Request that card on its own or use Request All below to " +
+            "ask several at once. A peer whose Allow Morph Requests is Off has their button " +
+            "disabled since they can't be requested.");
         ImGui.Spacing();
 
 #if DEBUG
@@ -223,7 +229,7 @@ public sealed class SyncTabView
 
     private void DrawTargetGrid()
     {
-        var targets = plugin.ConsentingPeers;
+        var targets = plugin.AllSyncPeers;
 
         if (!plugin.IsNetworkActive)
         {
@@ -232,7 +238,7 @@ public sealed class SyncTabView
         }
         if (targets.Count == 0)
         {
-            ImGui.TextDisabled("No consenting peers connected right now.");
+            ImGui.TextDisabled("No peers connected right now.");
             return;
         }
 
@@ -261,7 +267,9 @@ public sealed class SyncTabView
         }
 
         ImGui.Spacing();
-        DrawAllControlsRow(targets);
+        // Off peers can't be requested at all, Request All should only act on the rest.
+        var requestable = targets.Where(p => plugin.ConsentingPeers.Contains(p)).ToList();
+        DrawAllControlsRow(requestable);
     }
 
     private TargetConfig GetOrCreateConfig(string peerName)
@@ -324,7 +332,7 @@ public sealed class SyncTabView
 
         // ── Speed ─────────────────────────────────────────────────────────────
         UiHelpers.SectionLabel("Morph Time:",
-            "How long the morph takes to complete, in seconds — lower is faster. " +
+            "How long the morph takes to complete, in seconds, lower is faster. " +
             "Ctrl+Click the slider to type an exact value.");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(Remaining());
@@ -368,8 +376,16 @@ public sealed class SyncTabView
         // ── Consent-gated Request/Waiting/Apply ─────────────────────────────────
         bool hasDestination = HasValidDestination(plugin, cfg);
         var  consent        = plugin.GetConsentForTarget(peerName);
+        bool requestable    = plugin.ConsentingPeers.Contains(peerName);
 
-        if (consent == ConsentStatus.Pending)
+        if (!requestable)
+        {
+            using (ImRaii.Disabled(true))
+                ImGui.Button("Request", new Vector2(innerWidth, 0));
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip($"{peerName} has Allow Morph Requests set to Off, they can't be requested.");
+        }
+        else if (consent == ConsentStatus.Pending)
         {
             using (ImRaii.Disabled(true))
                 ImGui.Button("Waiting…", new Vector2(innerWidth, 0));

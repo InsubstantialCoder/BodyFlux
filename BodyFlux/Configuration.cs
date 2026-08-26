@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using BodyFlux.Input;
 using BodyFlux.Morph;
+using BodyFlux.Services;
 
 namespace BodyFlux;
 
@@ -13,7 +14,7 @@ public class Configuration : IPluginConfiguration
     public int Version { get; set; } = 0;
 
     /// <summary>Latest schema version. Bump when adding a migration step in <see cref="Migrate"/>.</summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     /// <summary>
     /// Stable anonymous identifier for this installation. Generated once on first load and persisted.
@@ -66,7 +67,11 @@ public class Configuration : IPluginConfiguration
     public List<MorphSequence> Sequences        { get; set; } = [];
     public List<MorphSequence> BrioSequences    { get; set; } = [];
 
-    // When true, connected peers are allowed to apply morph profiles to this character.
+    // Policy for incoming morph requests from connected peers, Off/Ask/Auto.
+    public ConsentMode MorphRequestMode { get; set; } = ConsentMode.Off;
+
+    // Superseded by MorphRequestMode as of schema v4, kept only so Migrate() can read the old
+    // value once on a config saved by an earlier version. No longer written.
     public bool AllowRemoteMorph { get; set; } = false;
 
     // ── Gauge Bind ───────────────────────────────────────────────────────────
@@ -151,6 +156,14 @@ public class Configuration : IPluginConfiguration
         {
             RelayUrl = DefaultRelayUrl;
             changed  = true;
+        }
+
+        // v4: AllowRemoteMorph (bool) replaced by MorphRequestMode (Off/Ask/Auto). true carries
+        // over as Ask, the old checkbox never skipped the prompt, so Ask is the faithful mapping.
+        if (Version < 4)
+        {
+            MorphRequestMode = AllowRemoteMorph ? ConsentMode.Ask : ConsentMode.Off;
+            changed = true;
         }
 
         if (Version != CurrentVersion)

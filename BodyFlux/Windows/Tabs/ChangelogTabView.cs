@@ -18,6 +18,11 @@ public sealed class ChangelogTabView
         using var scroll = ImRaii.Child("##ChangelogScroll", new System.Numerics.Vector2(0, 0), false);
         if (!scroll) return;
 
+        // A bit larger than the rest of the plugin, this tab is read prose, not controls, so the
+        // default UI size felt cramped for it. Reset before returning so nothing else in this
+        // window inherits the scale (SetWindowFontScale is per-window state, not auto-scoped).
+        ImGui.SetWindowFontScale(1.15f);
+
         var currentVersion = typeof(Plugin).Assembly.GetName().Version;
 
         for (int i = 0; i < ChangelogEntries.All.Length; i++)
@@ -53,5 +58,7 @@ public sealed class ChangelogTabView
                 ImGui.Spacing();
             }
         }
+
+        ImGui.SetWindowFontScale(1f);
     }
 }

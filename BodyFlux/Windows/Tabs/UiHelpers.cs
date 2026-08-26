@@ -321,8 +321,8 @@ internal static class UiHelpers
 
         PaintTrackAndFill(drawList, rectMin, rectMax, rounding, frac);
 
-        // Grab glow/dot painted BEFORE the native call (not after) so the native centered value
-        // text — drawn inside SliderFloat itself — always lands on top of it instead of being
+        // Grab glow/dot painted BEFORE the native call (not after), so the native centered value
+        // text, drawn inside SliderFloat itself, always lands on top of it instead of being
         // covered by the grab; same pre-drag-position tradeoff PaintTrackAndFill already makes.
         float grabR = height / 2f - 1f;
         // Inset by the grab's own radius (matching how ImGui positions its own, invisible, grab)
@@ -341,7 +341,7 @@ internal static class UiHelpers
         // slider can show (formatted at `max`) so it doesn't jitter as the live value's width
         // changes. Keeps the near-white text legible over the white grab (and the pastel fill)
         // without recoloring the grab itself, which looked out of place against the violet→teal
-        // palette (tried Theme.AccentActive — too saturated a purple next to the pastel gradient).
+        // palette (tried Theme.AccentActive, too saturated a purple next to the pastel gradient).
         string  sample     = FormatSliderValueForSizing(format, max);
         var     textSize   = ImGui.CalcTextSize(sample);
         var     padding    = new Vector2(6f, 2f);
@@ -366,7 +366,7 @@ internal static class UiHelpers
 
     /// <summary>
     /// Renders a printf-style <c>"%.Nf"</c> float format (the only spec <see cref="GradientSlider"/>
-    /// callers use, e.g. <c>"%.2f s"</c>) for sizing the value-text backdrop only — doesn't need to
+    /// callers use, e.g. <c>"%.2f s"</c>) for sizing the value-text backdrop only, doesn't need to
     /// match the native C-runtime formatting character-for-character, just close enough in width.
     /// </summary>
     private static string FormatSliderValueForSizing(string cFormat, float value) =>

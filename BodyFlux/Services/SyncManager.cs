@@ -11,6 +11,14 @@ namespace BodyFlux.Services;
 public enum ConsentStatus { Idle, Pending, Granted }
 
 /// <summary>
+/// A player's own policy for incoming morph requests, broadcast to peers so their client can gray
+/// out the Request button before ever sending one. Off = never requestable, no prompt ever shown.
+/// Ask = requestable, but every request still needs an explicit Accept/Deny (the original,
+/// prompt-by-default behavior). Auto = requestable and granted immediately, no prompt at all.
+/// </summary>
+public enum ConsentMode { Off, Ask, Auto }
+
+/// <summary>
 /// Owns the <see cref="NetworkSync"/> connection and everything network-related: connecting,
 /// broadcasting the local player's morph frames and base scaling, and applying frames received
 /// from peers. The morph engine talks to peers only through this class — it never sees the raw
@@ -192,6 +200,29 @@ public sealed class SyncManager : IDisposable
             && seen >= DateTime.UtcNow.AddSeconds(-PeerStaleSeconds);
     }
 
+    /// <summary>
+    /// Every current member of the Sync Key we can resolve to a nearby character, regardless of
+    /// their consent policy, the full roster for the Sync tab's grid. Unlike <see cref="ConsentingPeers"/>
+    /// this includes peers whose policy is Off; the grid shows them but disables their Request button.
+    /// </summary>
+    public IReadOnlyList<string> AllPeers
+    {
+        get
+        {
+            if (_net == null) return [];
+            var cutoff = DateTime.UtcNow.AddSeconds(-PeerStaleSeconds);
+            var names  = BuildIdToNameMap();
+            var list   = new List<string>();
+            foreach (var kv in _net.Peers)
+                if (kv.Value >= cutoff && names.TryGetValue(kv.Key, out var name))
+                    list.Add(name);
+#if DEBUG
+            list.AddRange(_debugPeers);
+#endif
+            return list;
+        }
+    }
+
     // ── Consent API (sender side) ─────────────────────────────────────────────
 
     /// <summary>Returns the current consent status for a named target.</summary>
@@ -252,9 +283,37 @@ public sealed class SyncManager : IDisposable
         if (_net == null || _incomingRequests.Count == 0) return;
         var (peerId, _) = _incomingRequests[0];
         _incomingRequests.RemoveAt(0);
+        GrantRequest(peerId);
+    }
+
+    /// <summary>Grants a peer's request outright, used by both a manual Accept and the Auto policy.</summary>
+    private void GrantRequest(string peerId)
+    {
         _grantedTo.Add(peerId);
         _promptCooldown.Remove(peerId);
-        _net.SendMorphConsent(peerId, accepted: true);
+        _net!.SendMorphConsent(peerId, accepted: true);
+    }
+
+    /// <summary>
+    /// Routes one incoming morph request through our own <see cref="Configuration.MorphRequestMode"/>
+    /// (Off/Ask/Auto): Off declines it immediately without bothering the local player (the sender's
+    /// Request button should already be disabled, so this only catches a stale/bypassing client);
+    /// Auto grants it immediately, no prompt; Ask queues the usual popup.
+    /// </summary>
+    private void HandleIncomingMorphRequest(string peerId)
+    {
+        switch (_config.MorphRequestMode)
+        {
+            case ConsentMode.Off:
+                _net!.SendMorphConsent(peerId, accepted: false);
+                break;
+            case ConsentMode.Auto:
+                GrantRequest(peerId);
+                break;
+            default: // Ask
+                QueueIncomingRequest(peerId);
+                break;
+        }
     }
 
     /// <summary>Denies the current incoming request.</summary>
@@ -294,11 +353,11 @@ public sealed class SyncManager : IDisposable
 
     // ── Local consent ─────────────────────────────────────────────────────────
 
-    /// <summary>Pushes the local "allow remote morph" flag to peers immediately.</summary>
-    public void SetLocalConsent(bool value)
+    /// <summary>Pushes the local morph-request policy (Off/Ask/Auto) to peers immediately.</summary>
+    public void SetLocalConsentMode(ConsentMode mode)
     {
         if (_net == null) return;
-        _net.LocalConsent = value;
+        _net.LocalConsentMode = mode;
         _net.SendHello();
     }
 
@@ -322,7 +381,7 @@ public sealed class SyncManager : IDisposable
 
         _net = new NetworkSync(playerName, _config.PairKey, _config.RelayUrl, _config.InstallId, _log)
         {
-            LocalConsent = _config.AllowRemoteMorph
+            LocalConsentMode = _config.MorphRequestMode
         };
 
         // Start the inactivity timer from the moment the connection is established.
@@ -493,7 +552,7 @@ public sealed class SyncManager : IDisposable
                     // The grant covered this morph only — the sender must ask again for the next.
                     _grantedTo.Remove(frame.SenderId);
                 }
-                else if (_config.AllowRemoteMorph)
+                else if (_config.MorphRequestMode != ConsentMode.Off)
                 {
                     // Frames are applied only while we have an open grant for that peer. Without
                     // this the Accept/Deny popup was advisory: a sender that had been accepted once
@@ -502,9 +561,9 @@ public sealed class SyncManager : IDisposable
                         UpdateInterp("_local_", frame.ProfileJson, 0, isLocal: true);
                     else
                         // No grant — the sender is mid-morph without having asked (an older client
-                        // reusing a cached consent). Prompt instead of dropping it silently, so the
-                        // decision still reaches us and accepting picks the morph up in flight.
-                        QueueIncomingRequest(frame.SenderId);
+                        // reusing a cached consent). Route through our policy instead of dropping it
+                        // silently, so Ask still gets a decision and Auto picks the morph up in flight.
+                        HandleIncomingMorphRequest(frame.SenderId);
                 }
                 continue;
             }
@@ -547,11 +606,11 @@ public sealed class SyncManager : IDisposable
         {
             if (consent.IsRequest)
             {
-                // Incoming morph request — add to queue for the popup window. An explicit request
-                // always prompts, so a peer we denied can ask again without waiting out the
-                // cooldown (that only suppresses auto-prompts driven by stray frames).
+                // Incoming morph request. An explicit request always clears the deny cooldown, so
+                // a peer we denied can ask again without waiting it out (the cooldown only suppresses
+                // auto-prompts driven by stray frames), then routes through our Off/Ask/Auto policy.
                 _promptCooldown.Remove(consent.SenderId);
-                QueueIncomingRequest(consent.SenderId);
+                HandleIncomingMorphRequest(consent.SenderId);
             }
             else if (consent.Accepted)
             {
@@ -587,7 +646,7 @@ public sealed class SyncManager : IDisposable
 
             if (state.IsLocal)
             {
-                if (_config.AllowRemoteMorph) _ipc.SetTempProfile(0, json);
+                if (_config.MorphRequestMode != ConsentMode.Off) _ipc.SetTempProfile(0, json);
             }
             else if (state.Index.HasValue)
             {

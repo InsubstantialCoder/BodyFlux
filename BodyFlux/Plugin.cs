@@ -66,6 +66,7 @@ public sealed class Plugin : IDalamudPlugin
     public string                                 LocalPlayerName   => Sync.LocalPlayerName;
     public IReadOnlyDictionary<string, DateTime>? ConnectedPeers    => Sync.Peers;
     public IReadOnlyList<string>                  ConsentingPeers   => Sync.ConsentingPeers;
+    public IReadOnlyList<string>                  AllSyncPeers      => Sync.AllPeers;
 
 #if DEBUG
     /// <summary>Debug-only: adds a fake connected, consenting peer so the Sync tab's target grid
@@ -148,17 +149,17 @@ public sealed class Plugin : IDalamudPlugin
     public bool IsInGPose => ClientState.IsGPosing;
 
     /// <summary>
-    /// Whether this player allows connected peers to morph their character.
+    /// This player's policy for incoming morph requests from connected peers (Off/Ask/Auto).
     /// Persists to config and immediately notifies peers via a hello message.
     /// </summary>
-    public bool AllowRemoteMorph
+    public Services.ConsentMode MorphRequestMode
     {
-        get => Configuration.AllowRemoteMorph;
+        get => Configuration.MorphRequestMode;
         set
         {
-            Configuration.AllowRemoteMorph = value;
+            Configuration.MorphRequestMode = value;
             Configuration.Save();
-            Sync.SetLocalConsent(value);
+            Sync.SetLocalConsentMode(value);
         }
     }
 
