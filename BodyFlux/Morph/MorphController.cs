@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
@@ -52,7 +52,10 @@ public sealed class MorphController
     private float     _direction; // +1 = forward (origin→dest), -1 = reverse (dest→origin)
     private MorphMode  _mode;
     private EasingMode _easing;
-    private EasingCurve? _customCurve;
+    // The active custom curve, already resolved to its anchor list at Start: EasingCurve.Resolve()
+    // allocates (and projects a legacy two-point curve), which has no business running once per
+    // bone per frame.
+    private CurveKey[]? _curveKeys;
     private JObject?  _workingProfile;
     private Dictionary<string, BoneAnim> _boneAnims = [];
 
@@ -118,7 +121,7 @@ public sealed class MorphController
         TargetIndex  = targetIndex;
         _mode        = mode;
         _easing      = easing;
-        _customCurve = customCurve;
+        _curveKeys   = customCurve?.Resolve();
         _direction   = 1f;
         _externaliseRoot = externaliseRoot;
         CurrentRootScale = null;
@@ -304,7 +307,7 @@ public sealed class MorphController
         _progress        = 0f;
         _direction       = 1f;
         _easing          = EasingMode.Linear;
-        _customCurve     = null;
+        _curveKeys       = null;
         _boneAnims       = [];
         _workingProfile  = null;
         _externaliseRoot = false;
@@ -367,8 +370,8 @@ public sealed class MorphController
         var workBones = _workingProfile?["Bones"] as JObject;
         if (workBones == null) return null;
 
-        var t = _customCurve is { } cc
-            ? CubicBezier.Evaluate(_progress, cc.P1, cc.P2)
+        var t = _curveKeys is { Length: >= 2 } keys
+            ? CubicBezier.EvaluateCurve(_progress, keys)
             : EasingHelper.Apply(_progress, _easing);
         foreach (var (bone, anim) in _boneAnims)
         {

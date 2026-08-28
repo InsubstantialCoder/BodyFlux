@@ -1,3 +1,4 @@
+﻿using System;
 using System.Numerics;
 using BodyFlux.Morph;
 using Newtonsoft.Json.Linq;
@@ -211,5 +212,63 @@ public class MorphControllerTests
 
         Assert.False(bone!.ContainsKey("Translation"));
         Assert.False(bone.ContainsKey("Rotation"));
+    }
+
+    // ── Custom easing curves ─────────────────────────────────────────────────
+    // Start's customCurve parameter is the single point every caller funnels through: the Player
+    // tab, Gpose/Brio actors, the Gauge Link driver AND MorphEngine.StartNetworkMorphFor, which is
+    // what applies a curve to another player over Sync (the sender interpolates locally and
+    // broadcasts finished bone frames, so the curve never crosses the wire). These two tests pin
+    // that shared path so a refactor cannot quietly drop the curve on one of those routes.
+
+    private static float RootScaleX(string json) =>
+        JObject.Parse(json)["Bones"]!["n_root"]!["Scaling"]!["X"]!.Value<float>();
+
+    [Fact]
+    public void Tick_MultiPointCurve_DrivesInterpolationThroughEverySegment()
+    {
+        // Plateau at y=0.25 across the middle of the run: at half time the morph is a quarter of
+        // the way there, not half, which no built-in easing and no single cubic can produce.
+        var keys = CurveKeys.Sanitize(
+        [
+            new CurveKey(new Vector2(0f,   0f),    Vector2.Zero,           new Vector2(0.1f, 0f)),
+            new CurveKey(new Vector2(0.3f, 0.25f), new Vector2(-0.1f, 0f), new Vector2(0.1f, 0f)),
+            new CurveKey(new Vector2(0.7f, 0.25f), new Vector2(-0.1f, 0f), new Vector2(0.1f, 0f)),
+            new CurveKey(new Vector2(1f,   1f),    new Vector2(-0.1f, 0f), Vector2.Zero),
+        ]);
+        var curve = EasingCurve.FromKeys(Guid.NewGuid(), "Hold", keys);
+
+        var controller = new MorphController();
+        var (profileBase, origin, dest) = BuildProfiles(Vector3.One, new Vector3(3f));
+        controller.Start(0, profileBase, origin, dest, MorphMode.Simple, EasingMode.Linear,
+                         externaliseRoot: false, customCurve: curve);
+
+        var json = controller.Tick(seconds: 0.5f, speed: 1f); // progress 0.5, inside the plateau
+        Assert.NotNull(json);
+
+        // scale = lerp(1, 3, eased) with eased = 0.25.
+        Assert.Equal(1.5f, RootScaleX(json!), precision: 3);
+        Assert.True(Math.Abs(RootScaleX(json!) - 2f) > 0.2f, "curve was ignored, this is the linear result");
+
+        controller.Tick(seconds: 0.5f, speed: 1f);
+        Assert.False(controller.IsMorphing);
+    }
+
+    [Fact]
+    public void Tick_LegacyTwoPointCurve_StillEasesTheSameAsBefore()
+    {
+        // A curve saved before multi-point support has no key list at all; it is projected on
+        // resolve. Its eased output must be bit-comparable to evaluating P1/P2 directly.
+        var curve = new EasingCurve(Guid.NewGuid(), "Ease In", new Vector2(0.42f, 0f), Vector2.One);
+
+        var controller = new MorphController();
+        var (profileBase, origin, dest) = BuildProfiles(Vector3.One, new Vector3(3f));
+        controller.Start(0, profileBase, origin, dest, MorphMode.Simple, EasingMode.Linear,
+                         externaliseRoot: false, customCurve: curve);
+
+        var json = controller.Tick(seconds: 0.5f, speed: 1f);
+        float expected = 1f + 2f * CubicBezier.Evaluate(0.5f, curve.P1, curve.P2);
+
+        Assert.Equal(expected, RootScaleX(json!), precision: 4);
     }
 }

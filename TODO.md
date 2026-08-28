@@ -14,8 +14,6 @@ No commitment — noted for potential exploration after the primary backlog is c
 
 - **Hotkeys** — bind Apply / Pause / Reset / Reverse to in-game keybinds via Dalamud's `IGamepadActionManager` or key-intercept hooks. Particularly useful for hands-free operation during GPose.
 
-- **Custom Easing Curve** — an in-UI bezier / spline editor in the Player Advanced sub-tab. `EasingHelper` is already designed to be extensible; this adds a `Custom` enum value backed by user-defined control points.
-
 - **Event Triggers** — fire a morph automatically on a game event (zone change, duty start, emote, etc.) via Dalamud event services. Scope and safety (preventing runaway loops) would need careful design.
 
 - **Hold at endpoints** — in Loop modes, pause for a configurable duration at 0% and 100% before reversing. Enables natural breathing/pulse effects with Loop Infinite. Likely implemented as `HoldDuration` in `MorphController` with a countdown timer at each boundary.
@@ -42,6 +40,11 @@ No commitment — noted for potential exploration after the primary backlog is c
     and Reset frames, so a stale UI selection — or a self-only Sequence — never retargets peers' frames.
 - **Reverse Morph** ✓ — button in Player and Brio tabs; flips `_direction` mid-morph or while paused.
 - **Easing Curves** ✓ — `EasingHelper` + `EasingMode` enum (Linear/EaseIn/EaseOut/EaseInOut). Player tab has Simple/Advanced sub-tabs; easing is per-tab (Player vs Brio). Player footer (progress + controls) always visible.
+- **Custom Easing Curves** ✓ - a curve editor tab (`EasingCurvesTabView`) where users author their own easing shapes and pick them from every Easing dropdown (Player, Gpose, Sequences, Gauge Link, Sync) alongside the 4 built-ins. Stored per curve as `EasingCurve` in `Configuration.CustomEasingCurves`; presets/history/sequences only reference one by `Guid?` `EasingCurveId`, so nothing else had to learn about curve shapes.
+  - **Multi-point** ✓ - curves are no longer limited to the two CSS-style control points. A curve is a list of `CurveKey` anchors the curve passes *through* (up to `CurveKeys.MaxKeys`), each with its own tangent handles stored as offsets from the anchor, evaluated piecewise by `CubicBezier.EvaluateCurve`. This is what makes plateaus, bounces and anticipation dips expressible at all: a single cubic cannot hold a value and then move again.
+  - **No config migration**: `EasingCurve` kept its `P1`/`P2` fields and gained an optional `Keys` list. A curve saved before multi-point support resolves to the exactly equivalent 2-anchor list on read (`EasingCurve.Resolve`), so `Configuration.CurrentVersion` did not move. `EasingCurve.FromKeys` keeps `P1`/`P2` updated as a downgrade approximation for an older plugin build reading a newer config.
+  - **Invariants live in `CurveKeys`**, not in the UI: endpoints pinned to (0,0)/(1,1), interior anchors strictly increasing in x with a minimum gap, handles confined to their own segment, y bounded to the editor canvas. Insertion uses a de Casteljau split so adding a point does not move the curve. The editor only draws and delegates.
+  - Applies to **Sync** morphs on other players unchanged: the sender evaluates the curve locally and broadcasts finished bone frames, so no curve data crosses the wire and the relay protocol was untouched. Note the ~20 Hz frame rate is the fidelity ceiling for very narrow segments on a remote viewer's screen.
 - **Speed independent per tab** ✓ — `GrowthSpeed` / `BrioGrowthSpeed` saved separately.
 - **Quick-Access Profile Presets** ✓ — 20 numbered slots in the Presets tab; `/bodyflux preset 1–20 [speed]` applies from chat. Saves profileId, speed, mode, easing. Slot count is centralised in `Configuration.PresetSlots`.
 - **Morph History** ✓ — last 5 morphs shown as a collapsible "Recent Morphs" section, for both the Player tab and the Brio tab (separate lists: `RecentMorphs` / `BrioRecentMorphs`). Deduped by profile, one-click re-apply. A spaced separator divides the controls from the history list.

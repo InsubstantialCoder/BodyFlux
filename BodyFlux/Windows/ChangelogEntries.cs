@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace BodyFlux.Windows;
 
@@ -10,6 +10,26 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 8, 3, 0), "Multi-Point Easing Curves",
+        [
+            "Custom curves in the Easing Curves tab are no longer limited to two control handles " +
+                "and can now have up to 8 points, for shapes that were simply impossible " +
+                "before, like a pause in the middle of a morph or a bounce that settles.",
+            "The points now sit directly on the curve instead of pulling at it from outside, so " +
+                "where you put a point is where the morph actually passes through. Double-click " +
+                "the graph to add one, drag it to move it, right-click it to delete it, and select " +
+                "it to bend the curve either side of it with its two handles.",
+            "Adding a point never changes the shape you already have. The curve stays exactly as " +
+                "it was and you get a new handle to bend it from.",
+            "Added new multi-point presets to start from: Bounce (overshoots and rings down into " +
+                "place), Anticipate (dips the other way first, then swings through), Hold (a dead " +
+                "stop halfway through the morph) and Steps (arrives in three visible stages).",
+            "Every curve you have already saved keeps working exactly as before and looks " +
+                "identical, nothing needs re-making, and old curves can be extended with extra " +
+                "points whenever you feel like it.",
+            "Custom curves apply to Sync morphs too: a morph you drive on someone else's " +
+                "character follows your curve on their screen, multi-point shapes included.",
+        ]),
         new ChangelogEntry(new Version(0, 8, 2, 0), "Allow Morph Requests Rework",
         [
             "\"Allow others to morph my character\" is now a 3-way \"Allow Morph Requests\" " +

@@ -33,7 +33,15 @@ You can morph your own character anywhere in the world, drive multiple GPose act
 - **Simple** — morph to the destination once.
 - **Loop (Single)** — morph to the destination, then reverse back to the start once.
 - **Loop (Infinite)** — continuously ping-pong between start and destination until Reset.
-- Easing curves: **Linear**, **Ease In**, **Ease Out**, **Ease In-Out**.
+- Built-in easing: **Linear**, **Ease In**, **Ease Out**, **Ease In-Out**, plus any curve you author yourself.
+
+### Custom Easing Curves
+- Draw your own easing in the **Easing Curves** tab, with a live draggable editor and an instant preview.
+- Curves are **multi-point**: up to **8** points, each sitting *on* the curve with its own in/out handles, so one curve can hold shapes a plain two-handle bezier never could: a pause mid-morph, a bounce that settles, a staircase.
+- Add, drag and delete points freely; adding a point never changes the shape you already have.
+- Start from a preset (**Linear**, **Ease**, **Ease In**, **Ease Out**, **Ease In-Out**, **Back**, plus multi-point **Bounce**, **Anticipate**, **Hold** and **Steps**) and bend it from there.
+- Custom curves are selectable everywhere easing is offered: Player, GPose, Sequences, Gauge Bind and per-peer Sync morphs. A morph you drive on someone else's character follows your curve on their screen too.
+- Curves saved with older versions keep working unchanged, and can be extended with extra points at any time.
 
 ### Presets
 - Save up to **20** morph configurations (profile, speed, mode, easing) for instant recall.
