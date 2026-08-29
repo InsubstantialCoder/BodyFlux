@@ -150,6 +150,10 @@ public class EasingCurvePresetsTests
     [InlineData("Anticipate")]
     [InlineData("Hold")]
     [InlineData("Steps")]
+    [InlineData("Breathing")]
+    [InlineData("Throbbing")]
+    [InlineData("Surge")]
+    [InlineData("Hesitate")]
     public void NewPreset_IsMultiPoint(string name)
     {
         Assert.True(Get(name).IsMultiPoint, $"{name} is supposed to carry interior anchors");
@@ -201,6 +205,221 @@ public class EasingCurvePresetsTests
         Assert.True(CubicBezier.EvaluateCurve(0.15f, keys) < 0.5f);
         Assert.True(CubicBezier.EvaluateCurve(0.85f, keys) > 0.5f);
     }
+
+    [Fact]
+    public void Surge_ArrivesInThreeWaves_EachCarryingFurtherThanTheLast()
+    {
+        var keys = Get("Surge").Keys;
+        float At(float t) => CubicBezier.EvaluateCurve(t, keys);
+
+        // Wave crests and the shallow relaxations between them.
+        float crest1 = At(0.22f), relax1 = At(0.36f);
+        float crest2 = At(0.56f), relax2 = At(0.70f);
+
+        Assert.True(relax1 < crest1, "Surge does not ease back after its first wave");
+        Assert.True(relax2 < crest2, "Surge does not ease back after its second wave");
+        Assert.True(crest2 > crest1, "Surge's second wave does not carry further than its first");
+
+        // Each wave gains more ground than the one before, which is what separates gathering
+        // strength from a stutter.
+        Assert.True(crest2 - relax1 > crest1, "Surge's second wave is not the bigger climb");
+        Assert.True(1f - relax2 > crest2 - relax1, "Surge's final wave is not the biggest climb");
+
+        // A surge builds towards the destination, it does not fly past it.
+        for (int i = 0; i <= 200; i++)
+            Assert.True(At(i / 200f) <= 1f + 1e-4f, $"Surge overshoots at t={i / 200f}");
+    }
+
+    [Fact]
+    public void Hesitate_CommitsPastHalfway_PullsBack_ThenGoesAllTheWay()
+    {
+        var keys = Get("Hesitate").Keys;
+        float At(float t) => CubicBezier.EvaluateCurve(t, keys);
+
+        float commit = At(0.24f);
+        float doubt  = At(0.48f);
+
+        Assert.True(commit > 0.5f,         $"Hesitate never really sets off ({commit})");
+        Assert.True(doubt < commit - 0.1f, $"Hesitate does not pull back ({doubt} against {commit})");
+        Assert.True(doubt > 0f, "Hesitate should waver mid-move, not retreat to the origin");
+
+        // Unlike Anticipate, the doubt happens after the move has started, not before it.
+        Assert.True(At(0.10f) > 0.15f, "Hesitate hangs around the origin instead of setting off first");
+
+        // Then it commits for real.
+        Assert.True(At(0.74f) > 0.9f, "Hesitate does not commit after wavering");
+        Assert.Equal(1f, At(1f), precision: 5);
+
+        // And it stays a plain transition between the two profiles, no overshoot either side.
+        for (int i = 0; i <= 200; i++)
+            Assert.InRange(At(i / 200f), -1e-4f, 1f + 1e-4f);
+    }
+
+    [Fact]
+
+    public void Breathing_RisesWithoutEverBackingUp_AndNeverPassesTheDestination()
+
+    {
+
+        // A breath in only goes one way, and a morph that overshot here would read as a gasp. Both
+
+        // matter more than usual for this preset because it is meant to be left running on Loop
+
+        // (Infinite), where any wobble repeats forever.
+
+        var keys = Get("Breathing").Keys;
+
+
+
+        float previous = 0f;
+
+        for (int i = 0; i <= 200; i++)
+
+        {
+
+            float value = CubicBezier.EvaluateCurve(i / 200f, keys);
+
+            Assert.True(value >= previous - 1e-4f, $"Breathing backs up at t={i / 200f}");
+
+            Assert.True(value <= 1f + 1e-4f, $"Breathing overshoots the destination at t={i / 200f} ({value})");
+
+            previous = value;
+
+        }
+
+    }
+
+
+
+    [Fact]
+
+    public void Breathing_StopsExactlyAtFullExtension_ForThePauseAtTheTopOfABreath()
+
+    {
+
+        // The last two anchors share y = 1 with horizontal handles, so this really is a stop and
+
+        // not a slow crawl. Under Loop (Infinite) the reverse pass replays it as the pause before
+
+        // breathing out.
+
+        var keys = Get("Breathing").Keys;
+
+
+
+        for (float t = 0.78f; t <= 1f; t += 0.02f)
+
+            Assert.Equal(1f, CubicBezier.EvaluateCurve(t, keys), precision: 5);
+
+
+
+        // And it is still a real move before that, not a curve that arrives immediately.
+
+        Assert.True(CubicBezier.EvaluateCurve(0.20f, keys) < 0.2f);
+
+        Assert.True(CubicBezier.EvaluateCurve(0.50f, keys) is > 0.55f and < 0.8f);
+
+    }
+
+
+
+    [Fact]
+
+    public void Breathing_EasesOffBothEnds_SoALoopedBreathHasNoKinkAtTheTurnaround()
+
+    {
+
+        // Near-zero speed at t=0 and t=1. Loop (Infinite) reverses direction at those points, and
+
+        // any real speed there would show up as a jolt once per breath.
+
+        var keys = Get("Breathing").Keys;
+
+
+
+        float startSpeed = (CubicBezier.EvaluateCurve(0.01f, keys) - CubicBezier.EvaluateCurve(0f, keys)) / 0.01f;
+
+        float endSpeed   = (CubicBezier.EvaluateCurve(1f, keys)    - CubicBezier.EvaluateCurve(0.99f, keys)) / 0.01f;
+
+
+
+        Assert.True(startSpeed < 0.15f, $"Breathing leaves the origin too fast ({startSpeed})");
+
+        Assert.True(endSpeed   < 0.05f, $"Breathing arrives too fast ({endSpeed})");
+
+    }
+
+
+
+    [Fact]
+
+    public void Throbbing_BeatsTwice_TheSecondSmallerThanTheFirst_ThenRests()
+
+    {
+
+        var keys = Get("Throbbing").Keys;
+
+        float At(float t) => CubicBezier.EvaluateCurve(t, keys);
+
+
+
+        float firstBeat  = At(0.18f);
+
+        float recoil     = At(0.32f);
+
+        float secondBeat = At(0.48f);
+
+
+
+        Assert.True(firstBeat > 1.10f,  $"Throbbing's first beat does not punch past the destination ({firstBeat})");
+
+        Assert.True(recoil    < 0.80f,  $"Throbbing does not recoil between beats ({recoil})");
+
+        Assert.True(secondBeat > recoil, "Throbbing's second beat does not rise again");
+
+        Assert.True(secondBeat < firstBeat, "Throbbing's second beat should be the smaller of the two");
+
+
+
+        // Both beats land inside the first half, leaving the back of the run as the rest between
+
+        // beats. Evenly spread pulses would read as a machine rather than a heart.
+
+        Assert.True(At(0.80f) is > 0.9f and < 1f, "Throbbing does not drift quietly into place after the beats");
+
+        Assert.Equal(1f, At(1f), precision: 5);
+
+    }
+
+
+
+    [Fact]
+
+    public void Throbbing_StartsGently_SoALoopedPulseDoesNotPopAtTheSeam()
+
+    {
+
+        // The beats are supposed to be the only sharp events in the cycle; the join between one
+
+        // pass and the next is not.
+
+        var keys = Get("Throbbing").Keys;
+
+
+
+        float seamSpeed = (CubicBezier.EvaluateCurve(0.01f, keys) - CubicBezier.EvaluateCurve(0f, keys)) / 0.01f;
+
+        float beatSpeed = (CubicBezier.EvaluateCurve(0.10f, keys) - CubicBezier.EvaluateCurve(0.09f, keys)) / 0.01f;
+
+
+
+        Assert.True(seamSpeed < beatSpeed / 4f,
+
+                    $"Throbbing leaves the origin nearly as fast as it beats ({seamSpeed} vs {beatSpeed})");
+
+    }
+
+
 
     [Fact]
     public void Steps_IsFlatAcrossBothTreads()

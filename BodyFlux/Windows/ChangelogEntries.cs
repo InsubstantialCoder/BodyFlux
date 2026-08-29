@@ -10,6 +10,19 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 8, 3, 1), "More Easing Curve Presets",
+        [
+            "Four more shapes in the curve editor's \"Start from\" picker, on top of the ones " +
+                "that shipped with multi-point curves.",
+            "Breathing and Throbbing are meant to be left running on Loop (Infinite). Breathing " +
+                "rises, pauses at full extension and eases back down with no jolt at the " +
+                "turnaround. Throbbing is a heartbeat: a hard beat past the destination, a " +
+                "recoil, a smaller second beat, and then a rest before it comes round again.",
+            "Surge and Hesitate suit a one-shot morph. Surge arrives in three waves that each " +
+                "carry further than the last, for growth that gathers strength instead of " +
+                "pushing once. Hesitate sets off past halfway, pulls back as if having second " +
+                "thoughts, and then commits.",
+        ]),
         new ChangelogEntry(new Version(0, 8, 3, 0), "Multi-Point Easing Curves",
         [
             "Custom curves in the Easing Curves tab are no longer limited to two control handles " +
