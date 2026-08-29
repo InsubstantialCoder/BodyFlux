@@ -10,6 +10,17 @@ public static class ChangelogEntries
 {
     public static readonly ChangelogEntry[] All =
     [
+        new ChangelogEntry(new Version(0, 8, 3, 2), "Preset Fixes",
+        [
+            "Applying a preset saved with one of the built-in easing curves (Linear, Ease In, " +
+                "Ease Out, Ease In-Out) no longer runs it with whatever custom curve happens to " +
+                "be selected in the Single tab. Presets saved with a custom curve were never " +
+                "affected and keep working as before. The same fix applies to Gpose presets.",
+            "A preset saved as \"live profile → something\" now really does start from the " +
+                "profile that is live when you apply it, instead of starting from the profile " +
+                "pinned in the Single tab's Origin Profile. Presets saved with their own origin " +
+                "profile were never affected.",
+        ]),
         new ChangelogEntry(new Version(0, 8, 3, 1), "More Easing Curve Presets",
         [
             "Four more shapes in the curve editor's \"Start from\" picker, on top of the ones " +

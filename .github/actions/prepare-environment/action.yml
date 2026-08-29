@@ -1,0 +1,61 @@
+name: 'Prepare Environment'
+description: 'Sets up .NET, restores packages and puts the Dalamud dev libraries where the SDK expects them.'
+
+inputs:
+  dalamud-distrib:
+    description: 'Distribution folder inside dalamud-distrib, must end in a slash (e.g. "stg/"). Empty means the stable release.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Resolve Dalamud version
+      id: dalamud
+      shell: pwsh
+      run: |
+        # The version endpoint is the cheapest way to key the cache: it changes exactly when the
+        # distribution we would download changes.
+        $url = "https://goatcorp.github.io/dalamud-distrib/${{ inputs.dalamud-distrib }}version"
+        $ver = (Invoke-RestMethod -Uri $url).AssemblyVersion
+        "version=$ver"                                       >> $env:GITHUB_OUTPUT
+        "path=$env:AppData\XIVLauncher\addon\Hooks\dev"      >> $env:GITHUB_OUTPUT
+        Write-Host "Dalamud ${{ inputs.dalamud-distrib }}latest is $ver"
+
+    - name: Cache Dalamud
+      id: cache-dalamud
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.dalamud.outputs.path }}
+        key: dalamud-${{ inputs.dalamud-distrib }}${{ steps.dalamud.outputs.version }}
+
+    - name: Download Dalamud
+      if: steps.cache-dalamud.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        # Dalamud.NET.Sdk does not fetch the libraries itself: it only looks in the XIVLauncher dev
+        # folder (or $DALAMUD_HOME). Extracting to the default location also satisfies
+        # BodyFlux.Tests, which reads Newtonsoft.Json.dll straight out of the same folder.
+        Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/${{ inputs.dalamud-distrib }}latest.zip" -OutFile latest.zip
+        Expand-Archive -Force latest.zip "${{ steps.dalamud.outputs.path }}"
+        Remove-Item latest.zip
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - name: Restore
+      shell: pwsh
+      run: |
+        # Only the plugin and its tests. BodyFluxRelay is a separate service and has no business in
+        # a plugin build.
+        dotnet restore BodyFlux/BodyFlux.csproj
+        dotnet restore BodyFlux.Tests/BodyFlux.Tests.csproj

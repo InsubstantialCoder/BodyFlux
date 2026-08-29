@@ -1,0 +1,148 @@
+name: Release
+
+# The ONLY path that publishes anything. Triggered by a four-part version tag, which release.ps1
+# pushes after it has merged the release commit into master. Pushing branches never publishes.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Prepare environment
+        uses: ./.github/actions/prepare-environment
+
+      # Everything the release depends on is checked before a single artifact is produced, so a
+      # mistake costs a red run instead of a half-published version.
+      - name: Validate release
+        id: validate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # git's exit codes are checked by hand below, so they must not throw on their own.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $version = $env:VERSION
+
+          $csproj = Get-Content -Raw BodyFlux/BodyFlux.csproj
+          if ($csproj -notmatch '<Version>(\d+\.\d+\.\d+\.\d+)</Version>') {
+              throw "No <Version> found in BodyFlux/BodyFlux.csproj"
+          }
+          $csprojVersion = $Matches[1]
+          if ($csprojVersion -ne $version) {
+              throw "Tag $version does not match <Version>$csprojVersion</Version> in the csproj."
+          }
+
+          $entry = & ./.github/scripts/Get-ChangelogEntry.ps1
+          if ("$($entry.Version)" -ne $version) {
+              throw "Newest changelog entry is $($entry.Version), expected $version."
+          }
+          if ($entry.Bullets.Count -eq 0 -or ($entry.Bullets | Where-Object { $_.Trim() }).Count -eq 0) {
+              throw "Changelog entry for $version has no highlights."
+          }
+
+          # The tag has to sit on master: the pluginmaster commit at the end of this job points
+          # users at whatever this build produced, and master is what the repo URL serves.
+          # FETCH_HEAD rather than origin/master: it is written by this very fetch, so the check
+          # cannot read a stale remote-tracking ref.
+          git fetch origin master --quiet
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch master." }
+          git merge-base --is-ancestor $env:GITHUB_SHA FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) {
+              throw "Tag $version is not on master. Merge to master before tagging."
+          }
+
+          # pluginmaster.json is owned by this workflow; it may lag behind (it still advertises the
+          # previous release), but it must never be ahead.
+          $pm = Get-Content -Raw pluginmaster.json | ConvertFrom-Json
+          if ([version]$pm[0].AssemblyVersion -gt [version]$version) {
+              throw "pluginmaster.json advertises $($pm[0].AssemblyVersion), which is newer than $version."
+          }
+
+          "title=$($entry.Title)" >> $env:GITHUB_OUTPUT
+          & ./.github/scripts/Get-ChangelogEntry.ps1 -Markdown | Set-Content -Path release-notes.md -Encoding utf8
+          Write-Host "Releasing $version - $($entry.Title)"
+
+      - name: Build
+        run: dotnet build BodyFlux/BodyFlux.csproj -c Release --no-restore --nologo
+
+      - name: Test
+        run: dotnet test BodyFlux.Tests/BodyFlux.Tests.csproj -c Release --no-restore --nologo
+
+      # The manifest inside the zip is what Dalamud actually reads after downloading, so this is the
+      # only check that proves the artifact and the advertised version agree.
+      - name: Verify package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = 'BodyFlux/bin/Release/BodyFlux/BodyFlux.zip'
+          if (-not (Test-Path $zip)) { throw "Plugin package not found at $zip" }
+
+          $unpacked = Join-Path $env:RUNNER_TEMP 'package-check'
+          Expand-Archive -Path $zip -DestinationPath $unpacked -Force
+          $manifest = Join-Path $unpacked 'BodyFlux.json'
+          if (-not (Test-Path $manifest)) { throw "BodyFlux.json missing from the package." }
+          $json = Get-Content -Raw $manifest | ConvertFrom-Json
+
+          if ($json.AssemblyVersion -ne $env:VERSION) {
+              throw "Packaged manifest says $($json.AssemblyVersion), expected $env:VERSION."
+          }
+          Write-Host "Package verified: BodyFlux.zip carries $($json.AssemblyVersion)"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.validate.outputs.title }}
+        shell: pwsh
+        run: |
+          gh release create $env:VERSION `
+            "BodyFlux/bin/Release/BodyFlux/BodyFlux.zip" `
+            --title "$env:TITLE $env:VERSION" `
+            --notes-file release-notes.md `
+            --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed." }
+
+      # Last, and only once the release exists: master's pluginmaster.json is what Dalamud polls, so
+      # it must never advertise a download that has not been uploaded yet.
+      - name: Checkout master
+        uses: actions/checkout@v5
+        with:
+          ref: master
+
+      - name: Commit pluginmaster.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $version = $env:VERSION
+          $pm = Get-Content -Raw pluginmaster.json
+          $pm = [regex]::Replace($pm, '("AssemblyVersion"\s*:\s*")\d+\.\d+\.\d+\.\d+(")', "`${1}$version`${2}")
+          $pm = [regex]::Replace($pm, '(releases/download/)\d+\.\d+\.\d+\.\d+(/)',          "`${1}$version`${2}")
+          Set-Content -Path pluginmaster.json -Value $pm -NoNewline -Encoding utf8
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pluginmaster.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+              Write-Host "pluginmaster.json already points at $version, nothing to commit."
+              exit 0
+          }
+          git commit -m "[CI] pluginmaster $version"
+          if ($LASTEXITCODE -ne 0) { throw "Committing pluginmaster.json failed." }
+          git push origin master
+          if ($LASTEXITCODE -ne 0) { throw "Pushing pluginmaster.json to master failed." }

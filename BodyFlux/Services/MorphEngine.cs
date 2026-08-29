@@ -287,9 +287,16 @@ public sealed class MorphEngine
     /// hands them to <see cref="MorphController"/> to start the transition. Optional overrides
     /// let callers (presets, history) supply per-morph values without touching saved config.
     /// </summary>
+    /// <param name="explicitOverrides">
+    /// True when the caller carries a complete saved configuration (a preset or a history entry).
+    /// The nullable overrides are then taken literally: a null <paramref name="originOverride"/>
+    /// means "this preset morphs from the live profile" and a null <paramref name="easingCurveIdOverride"/>
+    /// means "this preset uses its built-in <see cref="EasingMode"/>", instead of falling back to the
+    /// Single tab's current Origin Profile pin / custom curve, which is not what was saved.
+    /// </param>
     public void StartGrowth(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
                             MorphTargetMode? targetModeOverride = null, Guid? originOverride = null,
-                            Guid? easingCurveIdOverride = null)
+                            Guid? easingCurveIdOverride = null, bool explicitOverrides = false)
     {
         if (_player.Controller.IsMorphing)
         {
@@ -355,7 +362,7 @@ public sealed class MorphEngine
         }
         else
         {
-            originJson = ResolvePlayerOriginJson(originOverride);
+            originJson = ResolvePlayerOriginJson(originOverride, explicitOverrides);
             if (originJson == null)
             {
                 _log.Error("[BodyFlux] No active C+ profile on the local player. " +
@@ -408,7 +415,7 @@ public sealed class MorphEngine
 
         var resolvedMode     = modeOverride   ?? _config.MorphMode;
         var resolvedEasing   = easingOverride ?? _config.EasingMode;
-        var resolvedCurveId  = easingCurveIdOverride ?? _config.EasingCurveId;
+        var resolvedCurveId  = explicitOverrides ? easingCurveIdOverride : easingCurveIdOverride ?? _config.EasingCurveId;
         var resolvedCurve    = resolvedCurveId is { } cid ? _config.CustomEasingCurves.Find(c => c.Id == cid) : null;
 
         // Template Overlay: only the bones defined in the selected template should animate —
@@ -435,7 +442,9 @@ public sealed class MorphEngine
         // was actually used (preset override, else the pin) so re-applying from history reproduces
         // the same morph instead of picking up whatever origin happens to be pinned later — see
         // MorphPreset.OriginProfileId.
-        Guid? usedOriginId = string.IsNullOrEmpty(TargetPlayerName) ? (originOverride ?? _config.OriginProfileId) : null;
+        Guid? usedOriginId = string.IsNullOrEmpty(TargetPlayerName)
+            ? (explicitOverrides ? originOverride : originOverride ?? _config.OriginProfileId)
+            : null;
         var historyEntry = new MorphPreset(destId, destName,
             speedOverride ?? _config.GrowthSpeed, resolvedMode, resolvedEasing,
             TargetMode: resolvedTargetMode, TemplateOwnerProfileId: templateOwnerProfileId,
@@ -668,7 +677,8 @@ public sealed class MorphEngine
     /// loaded MCDF → permanent C+ profile → identity (unscaled). Records the morph in Brio history.
     /// </summary>
     public void StartBrioMorph(float? speedOverride = null, MorphMode? modeOverride = null, EasingMode? easingOverride = null,
-                               MorphTargetMode? targetModeOverride = null, Guid? easingCurveIdOverride = null)
+                               MorphTargetMode? targetModeOverride = null, Guid? easingCurveIdOverride = null,
+                               bool explicitOverrides = false)
     {
         if (SelectedBrioActorIndex < 0)
         {
@@ -703,7 +713,7 @@ public sealed class MorphEngine
 
         var resolvedMode    = modeOverride   ?? _config.MorphMode;
         var resolvedEasing  = easingOverride ?? _config.BrioEasingMode;
-        var resolvedCurveId = easingCurveIdOverride ?? _config.BrioEasingCurveId;
+        var resolvedCurveId = explicitOverrides ? easingCurveIdOverride : easingCurveIdOverride ?? _config.BrioEasingCurveId;
 
         if (!StartBrioMorphFor((ushort)SelectedBrioActorIndex, destId, _brioOriginJson,
                                speedOverride, resolvedMode, resolvedEasing, resolvedTargetMode, templateOwnerProfileId,
@@ -1150,7 +1160,7 @@ public sealed class MorphEngine
             SelectedProfileIndex = idx;
         }
         StartGrowth(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.OriginProfileId,
-                    preset.EasingCurveId);
+                    preset.EasingCurveId, explicitOverrides: true);
         return true;
     }
 
@@ -1210,7 +1220,8 @@ public sealed class MorphEngine
             BrioOriginLabel = preset.OriginMcdfLabel ?? "";
         }
 
-        StartBrioMorph(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.EasingCurveId);
+        StartBrioMorph(speedOverride ?? preset.Speed, preset.Mode, preset.Easing, preset.TargetMode, preset.EasingCurveId,
+                       explicitOverrides: true);
     }
 
     /// <summary>Saves the current UI selection into preset slot <paramref name="slot"/> (0-based).</summary>
@@ -1448,16 +1459,24 @@ public sealed class MorphEngine
     /// the globally pinned Origin Profile, then the live-active C+ profile, then a temp profile
     /// already applied by another plugin. Shared by <see cref="StartGrowth"/> and the instant-apply
     /// path in <see cref="ResetGrowth"/> so both agree on what "Origin" currently means.
+    /// <paramref name="originIsExplicit"/> marks <paramref name="originOverride"/> as a preset's
+    /// complete answer, so a null one means "morph from the live profile, as saved" and skips the
+    /// pin: a "live profile → X" preset must not silently source its origin from whatever the
+    /// Single tab's Origin Profile happens to be pinned to now.
     /// </summary>
-    private string? ResolvePlayerOriginJson(Guid? originOverride = null)
+    private string? ResolvePlayerOriginJson(Guid? originOverride = null, bool originIsExplicit = false)
     {
-        if (originOverride is { } presetOriginId)
+        if (originIsExplicit)
         {
-            var (ecPreset, presetJson) = _ipc.GetProfile(presetOriginId);
-            if (ecPreset == 0 && presetJson != null)
-                return presetJson;
-            _log.Warning($"[BodyFlux] Preset's saved Origin Profile could not be loaded (ec={ecPreset}); " +
-                         "falling back to the pinned/live origin.");
+            if (originOverride is { } presetOriginId)
+            {
+                var (ecPreset, presetJson) = _ipc.GetProfile(presetOriginId);
+                if (ecPreset == 0 && presetJson != null)
+                    return presetJson;
+                _log.Warning($"[BodyFlux] Preset's saved Origin Profile could not be loaded (ec={ecPreset}); " +
+                             "falling back to the live profile.");
+            }
+            return ResolveLivePlayerOriginJson();
         }
 
         if (_config.OriginProfileId is { } pinnedOriginId)
@@ -1469,6 +1488,15 @@ public sealed class MorphEngine
                          "falling back to the live active profile.");
         }
 
+        return ResolveLivePlayerOriginJson();
+    }
+
+    /// <summary>
+    /// The pin-free tail of <see cref="ResolvePlayerOriginJson"/>: the live-active C+ profile,
+    /// then a temp profile already applied by another plugin. Null if neither can be read.
+    /// </summary>
+    private string? ResolveLivePlayerOriginJson()
+    {
         var (ec1, activeId) = _ipc.GetActiveProfileId(0);
         if (ec1 == 0 && activeId.HasValue)
         {

@@ -1,0 +1,31 @@
+name: CI
+
+# Builds and tests every branch except master, plus pull requests. Publishes nothing: a release
+# only ever happens through release.yml, which is triggered by a version tag.
+on:
+  push:
+    branches-ignore:
+      - master
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Prepare environment
+        uses: ./.github/actions/prepare-environment
+
+      - name: Build
+        run: dotnet build BodyFlux/BodyFlux.csproj -c Release --no-restore --nologo
+
+      - name: Test
+        run: dotnet test BodyFlux.Tests/BodyFlux.Tests.csproj -c Release --no-restore --nologo
